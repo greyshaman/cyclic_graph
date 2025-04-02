@@ -1,14 +1,33 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
+
+use node::Node;
+use tokio::sync::RwLock;
+
+mod node;
+
+pub struct CyclicGraph<T> {
+    input: Arc<RwLock<Node<T>>>,
+    output: Arc<RwLock<Node<T>>>,
+    nodes: HashMap<u64, Arc<RwLock<Node<T>>>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl<T> CyclicGraph<T> {
+    pub fn new(input_data: T, output_data: T) -> Self {
+        let input = Arc::new(RwLock::new(Node::new(0, input_data)));
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        let output = Arc::new(RwLock::new(Node::new(1, output_data)));
+
+        let mut nodes = HashMap::new();
+        nodes.insert(0, input.clone());
+        nodes.insert(1, output.clone());
+
+        Self {
+            input,
+            output,
+            nodes,
+        }
     }
 }
