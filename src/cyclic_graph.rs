@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     sync::{Arc, atomic::AtomicUsize},
 };
 
+use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
 use crate::{error::CyclicGraphError, node::Node};
@@ -15,7 +16,7 @@ pub struct CyclicGraph<T> {
     id_node_counter: AtomicUsize,
 }
 
-impl<T> CyclicGraph<T> {
+impl<T: Send + Sync> CyclicGraph<T> {
     pub async fn new(input_data: T, output_data: T) -> Self {
         let input = Arc::new(Node::new(0, input_data));
         let output = Arc::new(Node::new(1, output_data));
@@ -34,7 +35,7 @@ impl<T> CyclicGraph<T> {
         }
     }
 
-    pub async fn add_node(
+    pub async fn append_node(
         &mut self,
         data: T,
         parent_ids: &[usize],
@@ -115,6 +116,55 @@ impl<T> CyclicGraph<T> {
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    pub async fn traverse_from_input(&self) -> Vec<usize> {
+        let visited = Arc::new(RwLock::new(HashSet::<usize>::new()));
+        let result = Arc::new(RwLock::new(Vec::<usize>::new()));
+        self.dfs(self.input.clone(), visited.clone(), result.clone())
+            .await;
+        result.read().await.clone()
+    }
+
+    #[async_recursion]
+    async fn dfs(
+        &self,
+        node: Arc<Node<T>>,
+        visited: Arc<RwLock<HashSet<usize>>>,
+        result: Arc<RwLock<Vec<usize>>>,
+    ) {
+        let children_ids = node.children_ids().await;
+
+        for child in children_ids.iter().filter_map(|id| self.nodes.get(id)) {
+            let child_id = child.id();
+            if visited.write().await.insert(child_id) {
+                result.write().await.push(child_id);
+                self.dfs(child.clone(), visited.clone(), result.clone()).await;
+            }
+        }
+    }
+
+    async fn bfs(&self, from_node: Arc<Node<T>>, goal_node: Arc<Node<T>>) -> bool {
+        let mut visited = HashSet::<usize>::new();
+        let mut queue = Vec::<Arc<Node<T>>>::new();
+
+        queue.push(from_node.clone());
+        while !queue.is_empty() {
+            let node = queue.pop().expect("queue is not empty");
+            if node.id() == goal_node.id() {
+                return true;
+            }
+            visited.insert(node.id());
+
+            let ids = node.children_ids().await;
+            for child in ids.iter().filter_map(|id| self.nodes.get(id)) {
+                let id = child.id();
+                if visited.insert(id) {
+                    queue.push(child.clone());
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -136,7 +186,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
         let mut graph = CyclicGraph::new("input", "output").await;
-        let new_node = graph.add_node("hidden", &[0], &[1]).await?;
+        let new_node = graph.append_node("hidden", &[0], &[1]).await?;
 
         assert_eq!(graph.len(), 3);
         assert_eq!(new_node.id(), 2);
@@ -154,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_node_should_return_error_when_input_id_in_children_param() {
         let mut graph = CyclicGraph::new("input", "output").await;
-        let result = graph.add_node("hidden", &[0], &[0]).await;
+        let result = graph.append_node("hidden", &[0], &[0]).await;
 
         assert!(result.is_err());
     }
@@ -162,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_node_should_return_error_when_output_id_in_parent_param() {
         let mut graph = CyclicGraph::new("input", "output").await;
-        let result = graph.add_node("hidden", &[1], &[1]).await;
+        let result = graph.append_node("hidden", &[1], &[1]).await;
 
         assert!(result.is_err());
     }
