@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
-    sync::{Arc, Weak},
+    collections::HashSet,
+    sync::Arc,
 };
 
 use tokio::sync::RwLock;
@@ -51,6 +51,15 @@ impl<T> Node<T> {
 
     pub async fn has_children(&self) -> bool {
         !self.child_ids.read().await.is_empty()
+    }
+
+    pub async fn children_ids(&self) -> Vec<usize> {
+        self.child_ids
+            .read()
+            .await
+            .iter()
+            .map(|id| id.clone())
+            .collect::<Vec<usize>>()
     }
 
     pub async fn link_parent(&self, parent: Arc<Node<T>>) -> bool {
