@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::RwLock;
 
 #[derive(Debug)]
-pub(super) struct Node<T> {
+pub struct Node<T> {
     id: usize,
     data: T,
     parents: HashMap<usize, Weak<RwLock<Node<T>>>>,
