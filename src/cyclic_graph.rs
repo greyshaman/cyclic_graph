@@ -1,4 +1,8 @@
-use std::{collections::HashMap, error::Error, sync::{atomic::AtomicUsize, Arc}};
+use std::{
+    collections::HashMap,
+    error::Error,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 use tokio::sync::RwLock;
 
