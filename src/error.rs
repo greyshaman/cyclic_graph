@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum CyclicGraphError {
+pub enum CyclicGraphError<I> {
     #[error("Cannot insert node before input node")]
     InsertBeforeInput,
 
@@ -9,5 +9,8 @@ pub enum CyclicGraphError {
     InsertAfterOutput,
 
     #[error("Node not found by id: {0}")]
-    NodeNotFoundById(usize),
+    NodeNotFoundById(I),
+
+    #[error("Entered id `{0}` is not unique")]
+    NonUniqueId(I),
 }
