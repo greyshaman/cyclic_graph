@@ -132,13 +132,14 @@ impl<T: Send + Sync> CyclicGraph<T> {
         visited: Arc<RwLock<HashSet<usize>>>,
         result: Arc<RwLock<Vec<usize>>>,
     ) {
-        let children_ids = node.children_ids().await;
+        let children_ids = node.child_ids().await;
 
         for child in children_ids.iter().filter_map(|id| self.nodes.get(id)) {
             let child_id = child.id();
             if visited.write().await.insert(child_id) {
                 result.write().await.push(child_id);
-                self.dfs(child.clone(), visited.clone(), result.clone()).await;
+                self.dfs(child.clone(), visited.clone(), result.clone())
+                    .await;
             }
         }
     }
@@ -155,7 +156,7 @@ impl<T: Send + Sync> CyclicGraph<T> {
             }
             visited.insert(node.id());
 
-            let ids = node.children_ids().await;
+            let ids = node.child_ids().await;
             for child in ids.iter().filter_map(|id| self.nodes.get(id)) {
                 let id = child.id();
                 if visited.insert(id) {
