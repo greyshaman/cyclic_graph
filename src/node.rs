@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 use tokio::sync::RwLock;
 
@@ -53,7 +50,7 @@ impl<T> Node<T> {
         !self.child_ids.read().await.is_empty()
     }
 
-    pub async fn children_ids(&self) -> Vec<usize> {
+    pub async fn child_ids(&self) -> Vec<usize> {
         self.child_ids
             .read()
             .await
@@ -78,6 +75,15 @@ impl<T> Node<T> {
 
     pub async fn has_parents(&self) -> bool {
         !self.parent_ids.read().await.is_empty()
+    }
+
+    pub async fn parent_ids(&self) -> Vec<usize> {
+        self.parent_ids
+            .read()
+            .await
+            .iter()
+            .map(|id| id.clone())
+            .collect::<Vec<usize>>()
     }
 }
 
@@ -146,6 +152,108 @@ mod tests {
         assert!(root_node.has_children().await);
         assert!(child_node.has_parents().await);
         assert!(!child_node.has_children().await);
+    }
+
+    #[tokio::test]
+    async fn test_second_link_child_attempt_should_return_false() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(parent.link_child(child.clone()).await);
+        assert!(!parent.link_child(child.clone()).await);
+    }
+
+    #[tokio::test]
+    async fn test_second_link_parent_attempt_should_return_false() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(child.link_parent(parent.clone()).await);
+        assert!(!child.link_parent(parent.clone()).await);
+    }
+
+    #[tokio::test]
+    async fn test_unlink_child_should_break_link_between_linked_nodes() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(parent.link_child(child.clone()).await);
+
+        assert!(parent.unlink_child(child.clone()).await);
+
+        assert!(!parent.has_children().await);
+        assert!(!child.has_parents().await);
+    }
+
+    #[tokio::test]
+    async fn test_second_unlink_child_should_return_false() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(parent.link_child(child.clone()).await);
+
+        assert!(parent.unlink_child(child.clone()).await);
+        assert!(!parent.unlink_child(child.clone()).await);
+    }
+
+    #[tokio::test]
+    async fn test_unlink_parent_should_break_link_between_linked_nodes() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(parent.link_child(child.clone()).await);
+
+        assert!(child.unlink_parent(parent.clone()).await);
+
+        assert!(!parent.has_children().await);
+        assert!(!child.has_parents().await);
+    }
+
+    #[tokio::test]
+    async fn test_second_unlink_parent_should_return_false() {
+        let parent = Arc::new(Node::new(0, "parent"));
+        let child = Arc::new(Node::new(1, "child"));
+
+        assert!(child.link_parent(parent.clone()).await);
+
+        assert!(child.unlink_parent(parent.clone()).await);
+        assert!(!child.unlink_parent(parent.clone()).await);
+    }
+
+    #[tokio::test]
+    async fn test_child_ids_should_return_children_identifiers_in_vector() {
+        let parent = Arc::new(Node::new(0, "parent"));
+
+        let child1 = Arc::new(Node::new(1, "child1"));
+        let child2 = Arc::new(Node::new(2, "child2"));
+
+        assert!(parent.link_child(child1.clone()).await);
+        assert!(parent.link_child(child2.clone()).await);
+
+        let ids = parent.child_ids().await;
+
+        assert!(!ids.is_empty());
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&2));
+    }
+
+    #[tokio::test]
+    async fn test_children_ids_should_return_children_identifiers_in_vector() {
+        let parent1 = Arc::new(Node::new(0, "parent"));
+        let parent2 = Arc::new(Node::new(1, "parent"));
+
+        let child = Arc::new(Node::new(2, "child1"));
+
+        assert!(parent1.link_child(child.clone()).await);
+        assert!(parent2.link_child(child.clone()).await);
+
+        let ids = child.parent_ids().await;
+
+        assert!(!ids.is_empty());
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&0));
+        assert!(ids.contains(&1));
     }
 
     #[tokio::test]
