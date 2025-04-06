@@ -1,8 +1,10 @@
 use std::{
-    collections::{HashMap, HashSet},
+    borrow::Borrow,
+    collections::{HashMap, HashSet, hash_map::Entry},
     error::Error,
     fmt::{Debug, Display},
     hash::Hash,
+    ptr::read,
     sync::{Arc, atomic::AtomicUsize},
 };
 
@@ -22,7 +24,7 @@ where
 {
     input: Arc<Node<I, T>>,
     output: Arc<Node<I, T>>,
-    nodes: HashMap<I, Arc<Node<I, T>>>,
+    nodes: Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>,
     id_generator: G,
     recent_id: AtomicUsize,
 }
@@ -51,6 +53,8 @@ where
         let mut nodes = HashMap::new();
         nodes.insert(input.id().clone(), input.clone());
         nodes.insert(output.id().clone(), output.clone());
+
+        let nodes = Arc::new(RwLock::new(nodes));
 
         input.link_child(output.clone()).await;
 
@@ -84,10 +88,10 @@ where
 
         let id = (self.id_generator)(&self.recent_id, GeneratorMode::Normal);
         let new_node = Arc::new(Node::new(id.clone(), data));
-        self.nodes.insert(id, new_node.clone());
+        self.nodes.write().await.insert(id, new_node.clone());
 
         for parent_id in parent_ids {
-            if let Some(parent) = self.nodes.get(parent_id) {
+            if let Some(parent) = self.nodes.read().await.get(parent_id) {
                 parent.link_child(new_node.clone()).await;
                 new_node.link_parent(parent.clone()).await;
             } else {
@@ -98,7 +102,7 @@ where
         }
 
         for child_id in child_ids {
-            if let Some(child) = self.nodes.get(child_id) {
+            if let Some(child) = self.nodes.read().await.get(child_id) {
                 child.link_parent(new_node.clone()).await;
                 new_node.link_child(child.clone()).await;
             } else {
@@ -125,6 +129,8 @@ where
 
         let parent = self
             .nodes
+            .read()
+            .await
             .get(&parent_id)
             .ok_or(Box::new(CyclicGraphError::NodeNotFoundById(
                 parent_id.clone(),
@@ -132,6 +138,8 @@ where
             .clone();
         let child = self
             .nodes
+            .read()
+            .await
             .get(&child_id)
             .ok_or(Box::new(CyclicGraphError::NodeNotFoundById(
                 child_id.clone(),
@@ -140,7 +148,7 @@ where
 
         let id = (self.id_generator)(&self.recent_id, GeneratorMode::Normal);
         let new_node = Arc::new(Node::new(id.clone(), data));
-        self.nodes.insert(id, new_node.clone());
+        self.nodes.write().await.insert(id, new_node.clone());
 
         if parent.has_child(&child_id).await {
             parent.unlink_child(child.clone()).await;
@@ -152,8 +160,63 @@ where
         Ok(new_node.clone())
     }
 
-    pub fn len(&self) -> usize {
-        self.nodes.len()
+    pub async fn remove(&mut self, id: &I) -> Result<bool, Box<dyn Error>> {
+        let r_nodes = self.nodes.read().await;
+        let node = r_nodes.get(id).cloned();
+        drop(r_nodes);
+
+        match node {
+            Some(node) => {
+                // prevent removing input or output
+                if self.input.id() == id {
+                    return Err(Box::new(CyclicGraphError::RemoveInput::<I>));
+                } else if self.output.id() == id {
+                    return Err(Box::new(CyclicGraphError::RemoveOutput::<I>));
+                }
+
+                // prolongation of braking links
+                // collect parents
+                let mut parents = Vec::new();
+                for node_id in node.parent_ids().await.iter() {
+                    if let Some(node) = self.nodes.read().await.get(node_id) {
+                        parents.push(node.clone());
+                    }
+                }
+
+                // collect children
+                let mut children = Vec::new();
+                for node_id in node.child_ids().await.iter() {
+                    if let Some(node) = self.nodes.read().await.get(node_id) {
+                        children.push(node.clone());
+                    }
+                }
+
+                // if parents and children are not had links then create links
+                // and unlink removing node from parents and children
+                for parent in parents {
+                    for child in &children {
+                        let child = child.clone();
+                        if !parent.has_child(child.id()).await {
+                            parent.link_child(child.clone()).await;
+                        }
+                        node.unlink_child(child.clone()).await;
+                    }
+                    node.unlink_parent(parent.clone()).await;
+                }
+
+                // remove node
+                Ok(self.nodes.write().await.remove(node.id()).is_some())
+            }
+            None => Ok(false),
+        }
+    }
+
+    pub async fn get(&self, id: &I) -> Option<Arc<Node<I, T>>> {
+        self.nodes.read().await.get(id).cloned()
+    }
+
+    pub async fn len(&self) -> usize {
+        self.nodes.read().await.len()
     }
 
     pub async fn traverse_from_input_node(&self) -> Vec<I> {
@@ -174,12 +237,13 @@ where
     ) {
         let children_ids = node.child_ids().await;
 
-        for child in children_ids.iter().filter_map(|id| self.nodes.get(id)) {
-            let child_id = child.id();
-            if visited.write().await.insert(child_id.clone()) {
-                result.write().await.push(child_id.clone());
-                self.dfs(child.clone(), visited.clone(), result.clone())
-                    .await;
+        for child_id in children_ids.iter() {
+            if let Some(child) = self.nodes.read().await.get(child_id) {
+                if visited.write().await.insert(child_id.clone()) {
+                    result.write().await.push(child_id.clone());
+                    self.dfs(child.clone(), visited.clone(), result.clone())
+                        .await;
+                }
             }
         }
     }
@@ -197,10 +261,11 @@ where
             visited.insert(node.id().clone());
 
             let ids = node.child_ids().await;
-            for child in ids.iter().filter_map(|id| self.nodes.get(id)) {
-                let id = child.id();
-                if visited.insert(id.clone()) {
-                    queue.push(child.clone());
+            for id in ids.iter() {
+                if let Some(child) = self.nodes.read().await.get(id) {
+                    if visited.insert(id.clone()) {
+                        queue.push(child.clone());
+                    }
                 }
             }
         }
@@ -234,7 +299,7 @@ mod tests {
 
             assert_eq!(graph.input.id(), &0);
             assert_eq!(graph.output.id(), &1);
-            assert_eq!(graph.len(), 2);
+            assert_eq!(graph.len().await, 2);
 
             assert!(graph.input.has_child(&1).await);
             assert!(graph.output.has_parent(&0).await);
@@ -315,7 +380,7 @@ mod tests {
             let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
             let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
 
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
             assert_eq!(n2.id(), &2);
             assert_eq!(n3.id(), &3);
             assert!(n2.has_parent(&0).await);
@@ -392,7 +457,7 @@ mod tests {
             let n3 = graph.insert_between("middle", 2, 1).await?;
 
             // input -> n2 -> n3 -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             assert_eq!(n2.id(), &2);
             assert_eq!(n3.id(), &3);
@@ -438,7 +503,7 @@ mod tests {
             let n3 = graph.insert_between("middle3", 0, 1).await?;
 
             // input -> [n2, n3] -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             assert_eq!(n2.id(), &2);
             assert_eq!(n3.id(), &3);
@@ -483,10 +548,9 @@ mod tests {
             let _n3 = graph.insert_between("middle3", n2.id().clone(), 1).await?;
 
             // input -> n2 -> n3 -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             let path = graph.traverse_from_input_node().await;
-            dbg!(&path);
 
             assert_eq!(path.get(0), Some(&0));
             assert_eq!(path.get(1), Some(&2));
@@ -519,11 +583,172 @@ mod tests {
             let _n3 = graph.insert_between("middle3", 0, 1).await?;
 
             // input -> [n2, n3] -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             let path = graph.traverse_from_input_node().await;
 
             assert_eq!(path.len(), 4);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_remove_should_delete_specified_node_and_prolongate_links()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                0,
+                "input_data",
+                1,
+                "output_data",
+                2,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            )
+            .await?;
+
+            // Graph state before removing n4 node
+            //               input
+            //               /    \
+            //              /      \
+            //             n2       n3
+            //            /  \     /  \
+            //           /    \   /    \
+            //          |      n4       |
+            //           \  __/ | \__  /
+            //            n5    |    n6
+            //             \    n7   /
+            //              \   |   /
+            //               \  |  /
+            //               output
+            //
+            // Graph state after removing n4 node
+            //               input
+            //               /    \
+            //              /      \
+            //             n2___ ___n3
+            //            / _\_/ \_/_ \
+            //           / /  \   /  \ \
+            //          n5      n7      n6
+            //           \      |      /
+            //            \     |     /
+            //             \    |    /
+            //              \   |   /
+            //               \  |  /
+            //               output
+
+            let n2 = graph.insert_between("middle2", 0, 1).await?;
+            let n3 = graph.insert_between("middle3", 0, 1).await?;
+            let n4 = graph.insert_between("middle4", n2.id().clone(), 1).await?;
+            n4.link_parent(n3.clone()).await;
+            let n5 = graph.insert_between("middle5", n2.id().clone(), 1).await?;
+            n5.link_parent(n4.clone()).await;
+            let n6 = graph.insert_between("middle6", n3.id().clone(), 1).await?;
+            n6.link_parent(n4.clone()).await;
+            let n7 = graph.insert_between("middle7", n4.id().clone(), 1).await?;
+
+            assert_eq!(graph.input.child_ids().await.len(), 2);
+            assert!(graph.input.has_child(&2).await);
+            assert!(graph.input.has_child(&3).await);
+
+            assert_eq!(n2.parent_ids().await.len(), 1);
+            assert!(n2.has_parent(&0).await);
+            assert_eq!(n2.child_ids().await.len(), 2);
+            assert!(n2.has_child(&4).await);
+            assert!(n2.has_child(&5).await);
+
+            assert_eq!(n3.parent_ids().await.len(), 1);
+            assert!(n3.has_parent(&0).await);
+            assert_eq!(n3.child_ids().await.len(), 2);
+            assert!(n3.has_child(&4).await);
+            assert!(n3.has_child(&6).await);
+
+            assert_eq!(n4.parent_ids().await.len(), 2);
+            assert!(n4.has_parent(&2).await);
+            assert!(n4.has_parent(&3).await);
+            assert_eq!(n4.child_ids().await.len(), 3);
+            assert!(n4.has_child(&5).await);
+            assert!(n4.has_child(&6).await);
+            assert!(n4.has_child(&7).await);
+
+            assert_eq!(n5.parent_ids().await.len(), 2);
+            assert!(n5.has_parent(&2).await);
+            assert!(n5.has_parent(&4).await);
+            assert_eq!(n5.child_ids().await.len(), 1);
+            assert!(n5.has_child(&1).await);
+
+            assert_eq!(n6.parent_ids().await.len(), 2);
+            assert!(n6.has_parent(&3).await);
+            assert!(n6.has_parent(&4).await);
+            assert_eq!(n6.child_ids().await.len(), 1);
+            assert!(n6.has_child(&1).await);
+
+            assert_eq!(n7.parent_ids().await.len(), 1);
+            assert!(n7.has_parent(&4).await);
+            assert_eq!(n7.child_ids().await.len(), 1);
+            assert!(n7.has_child(&1).await);
+
+            assert_eq!(graph.output.parent_ids().await.len(), 3);
+            assert!(graph.output.has_parent(&5).await);
+            assert!(graph.output.has_parent(&6).await);
+            assert!(graph.output.has_parent(&7).await);
+
+            assert_eq!(graph.len().await, 8);
+
+            let res = graph.remove(&4).await;
+            assert!(res.is_ok());
+            assert!(res.unwrap());
+
+            assert_eq!(graph.len().await, 7);
+
+            assert_eq!(graph.input.child_ids().await.len(), 2);
+            assert!(graph.input.has_child(&2).await);
+            assert!(graph.input.has_child(&3).await);
+
+            assert_eq!(n2.parent_ids().await.len(), 1);
+            assert!(n2.has_parent(&0).await);
+            assert_eq!(n2.child_ids().await.len(), 3);
+            assert!(n2.has_child(&5).await);
+            assert!(n2.has_child(&6).await);
+            assert!(n2.has_child(&7).await);
+
+            assert_eq!(n3.parent_ids().await.len(), 1);
+            assert!(n3.has_parent(&0).await);
+            assert_eq!(n3.child_ids().await.len(), 3);
+            assert!(n3.has_child(&5).await);
+            assert!(n3.has_child(&6).await);
+            assert!(n3.has_child(&7).await);
+
+            assert_eq!(n5.parent_ids().await.len(), 2);
+            assert!(n5.has_parent(&2).await);
+            assert!(n5.has_parent(&3).await);
+            assert_eq!(n5.child_ids().await.len(), 1);
+            assert!(n5.has_child(&1).await);
+
+            assert_eq!(n6.parent_ids().await.len(), 2);
+            assert!(n6.has_parent(&2).await);
+            assert!(n6.has_parent(&3).await);
+            assert_eq!(n6.child_ids().await.len(), 1);
+            assert!(n6.has_child(&1).await);
+
+            assert_eq!(n7.parent_ids().await.len(), 2);
+            assert!(n7.has_parent(&2).await);
+            assert!(n7.has_parent(&3).await);
+            assert_eq!(n7.child_ids().await.len(), 1);
+            assert!(n7.has_child(&1).await);
+
+            assert_eq!(graph.output.parent_ids().await.len(), 3);
+            assert!(graph.output.has_parent(&5).await);
+            assert!(graph.output.has_parent(&6).await);
+            assert!(graph.output.has_parent(&7).await);
+
+            // try to remove again. remove should remove Ok(false)
+            let res = graph.remove(&4).await;
+            assert!(res.is_ok());
+            assert!(!res.unwrap());
 
             Ok(())
         }
@@ -557,7 +782,7 @@ mod tests {
 
             assert_eq!(graph.input.id(), "IL");
             assert_eq!(graph.output.id(), "OL");
-            assert_eq!(graph.len(), 2);
+            assert_eq!(graph.len().await, 2);
 
             assert!(graph.input.has_children().await);
             assert!(graph.input.has_child("OL").await);
@@ -629,7 +854,7 @@ mod tests {
                 )
                 .await?;
 
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
             assert_eq!(new_node.id(), "ML_0");
             assert_eq!(new_node2.id(), "ML_1");
 
@@ -746,7 +971,7 @@ mod tests {
                 .await?;
 
             // input -> n0 -> n1 -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             assert_eq!(n0.id(), "ML_0");
             assert!(n0.has_parent("IL").await);
@@ -802,7 +1027,7 @@ mod tests {
                 .await?;
 
             // input -> [n0, n1] -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             assert_eq!(n0.id(), "ML_0");
             assert!(n0.has_parent("IL").await);
@@ -854,7 +1079,7 @@ mod tests {
                 .await?;
 
             // input -> n0 -> n1 -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             let path = graph.traverse_from_input_node().await;
 
@@ -898,7 +1123,7 @@ mod tests {
                 .await?;
 
             // input -> [n0, n1] -> output
-            assert_eq!(graph.len(), 4);
+            assert_eq!(graph.len().await, 4);
 
             let path = graph.traverse_from_input_node().await;
 
@@ -944,7 +1169,7 @@ mod tests {
                 .insert_between("middle", n1.id().into(), String::from("OL"))
                 .await?;
 
-            assert_eq!(graph.len(), 5);
+            assert_eq!(graph.len().await, 5);
 
             assert!(graph.bfs(graph.input.clone(), graph.output.clone()).await);
             assert!(!graph.bfs(graph.output.clone(), graph.input.clone()).await);
