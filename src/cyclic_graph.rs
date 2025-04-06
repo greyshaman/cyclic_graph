@@ -777,6 +777,7 @@ mod tests {
             assert!(node_opt.is_some());
             let node = node_opt.unwrap();
             assert!(node.data().read().await.contains("middle2"));
+            assert_eq!(node.id(), &2);
 
             // try get non-existing node
             let node_opt = graph.get(&10);
