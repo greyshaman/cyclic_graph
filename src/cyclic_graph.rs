@@ -1,10 +1,8 @@
 use std::{
-    borrow::Borrow,
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     error::Error,
     fmt::{Debug, Display},
     hash::Hash,
-    ptr::read,
     sync::{Arc, atomic::AtomicUsize},
 };
 
@@ -629,10 +627,10 @@ mod tests {
             //               input
             //               /    \
             //              /      \
-            //             n2___ ___n3
-            //            / _\_/ \_/_ \
-            //           / /  \   /  \ \
-            //          n5      n7      n6
+            //             n2--\ /--n3
+            //            /  \  X   / \
+            //           /    \/ \/    \
+            //          n5____/n7 \____n6
             //           \      |      /
             //            \     |     /
             //             \    |    /
@@ -749,6 +747,40 @@ mod tests {
             let res = graph.remove(&4).await;
             assert!(res.is_ok());
             assert!(!res.unwrap());
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                0,
+                "input_data",
+                1,
+                "output_data",
+                2,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            )
+            .await?;
+
+            let _n2 = graph.insert_between("middle2", 0, 1).await?;
+
+            // input -> n2 -> output
+            assert_eq!(graph.len().await, 3);
+
+            let node_opt = graph.get(&2).await;
+            assert!(node_opt.is_some());
+            let node = node_opt.unwrap();
+            assert!(node.data().read().await.contains("middle2"));
+
+            // try get non-existing node
+            let node_opt = graph.get(&10);
+            assert!(node_opt.await.is_none());
 
             Ok(())
         }
