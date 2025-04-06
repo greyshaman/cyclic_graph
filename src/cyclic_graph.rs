@@ -156,9 +156,10 @@ where
         self.nodes.len()
     }
 
-    pub async fn traverse_from_input(&self) -> Vec<I> {
+    pub async fn traverse_from_input_node(&self) -> Vec<I> {
         let visited = Arc::new(RwLock::new(HashSet::<I>::new()));
         let result = Arc::new(RwLock::new(Vec::<I>::new()));
+        result.write().await.push(self.input.id().clone());
         self.dfs(self.input.clone(), visited.clone(), result.clone())
             .await;
         result.read().await.clone()
@@ -183,7 +184,7 @@ where
         }
     }
 
-    async fn bfs(&self, from_node: Arc<Node<I, T>>, goal_node: Arc<Node<I, T>>) -> bool {
+    pub async fn bfs(&self, from_node: Arc<Node<I, T>>, goal_node: Arc<Node<I, T>>) -> bool {
         let mut visited = HashSet::<I>::new();
         let mut queue = Vec::<Arc<Node<I, T>>>::new();
 
@@ -455,6 +456,74 @@ mod tests {
             assert!(!graph.output.has_parent(&0).await);
             assert!(graph.output.has_parent(&2).await);
             assert!(graph.output.has_parent(&3).await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_traverse_from_input_should_return_correct_path_serial_graph()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                0,
+                "input_data",
+                1,
+                "output_data",
+                2,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            )
+            .await?;
+
+            let n2 = graph.insert_between("middle2", 0, 1).await?;
+
+            let _n3 = graph.insert_between("middle3", n2.id().clone(), 1).await?;
+
+            // input -> n2 -> n3 -> output
+            assert_eq!(graph.len(), 4);
+
+            let path = graph.traverse_from_input_node().await;
+            dbg!(&path);
+
+            assert_eq!(path.get(0), Some(&0));
+            assert_eq!(path.get(1), Some(&2));
+            assert_eq!(path.get(2), Some(&3));
+            assert_eq!(path.get(3), Some(&1));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_traverse_from_input_should_return_correct_path_parallel_graph()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                0,
+                "input_data",
+                1,
+                "output_data",
+                2,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            )
+            .await?;
+
+            let _n2 = graph.insert_between("middle2", 0, 1).await?;
+
+            let _n3 = graph.insert_between("middle3", 0, 1).await?;
+
+            // input -> [n2, n3] -> output
+            assert_eq!(graph.len(), 4);
+
+            let path = graph.traverse_from_input_node().await;
+
+            assert_eq!(path.len(), 4);
 
             Ok(())
         }
@@ -749,6 +818,138 @@ mod tests {
             assert!(!graph.output.has_parent("IL").await);
             assert!(graph.output.has_parent("ML_0").await);
             assert!(graph.output.has_parent("ML_1").await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await?;
+
+            let n0 = graph
+                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .await?;
+
+            let n1 = graph
+                .insert_between("middle", n0.id().into(), String::from("OL"))
+                .await?;
+
+            // input -> n0 -> n1 -> output
+            assert_eq!(graph.len(), 4);
+
+            let path = graph.traverse_from_input_node().await;
+
+            assert_eq!(path.get(0), Some(graph.input.id()));
+            assert_eq!(path.get(1), Some(n0.id()));
+            assert_eq!(path.get(2), Some(n1.id()));
+            assert_eq!(path.get(3), Some(graph.output.id()));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await?;
+
+            let _n0 = graph
+                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .await?;
+
+            let _n1 = graph
+                .insert_between("middle", graph.input.id().into(), String::from("OL"))
+                .await?;
+
+            // input -> [n0, n1] -> output
+            assert_eq!(graph.len(), 4);
+
+            let path = graph.traverse_from_input_node().await;
+
+            assert_eq!(path.len(), 4);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await?;
+
+            // input -> [n0, n1 -> n2] -> output
+
+            let n0 = graph
+                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .await?;
+
+            let n1 = graph
+                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .await?;
+
+            let n2 = graph
+                .insert_between("middle", n1.id().into(), String::from("OL"))
+                .await?;
+
+            assert_eq!(graph.len(), 5);
+
+            assert!(graph.bfs(graph.input.clone(), graph.output.clone()).await);
+            assert!(!graph.bfs(graph.output.clone(), graph.input.clone()).await);
+            assert!(!graph.bfs(n0.clone(), n1.clone()).await);
+            assert!(graph.bfs(n1.clone(), n2.clone()).await);
 
             Ok(())
         }
