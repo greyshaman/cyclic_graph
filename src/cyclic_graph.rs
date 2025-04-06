@@ -31,7 +31,7 @@ impl<I, T, G> CyclicGraph<I, T, G>
 where
     I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
     T: Send + Sync,
-    G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send,
+    G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
 {
     pub async fn new(
         input_id: I,
@@ -302,7 +302,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_add_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
+        async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
                     GeneratorMode::Normal => {
@@ -311,23 +311,30 @@ mod tests {
                     GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
                 })
                 .await?;
-            let new_node = graph.append_node("hidden", &[0], &[1]).await?;
+            let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
+            let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
 
-            assert_eq!(graph.len(), 3);
-            assert_eq!(new_node.id(), &2);
-            assert!(new_node.has_parent(&0).await);
-            assert!(new_node.has_child(&1).await);
+            assert_eq!(graph.len(), 4);
+            assert_eq!(n2.id(), &2);
+            assert_eq!(n3.id(), &3);
+            assert!(n2.has_parent(&0).await);
+            assert!(n2.has_child(&1).await);
+
+            assert!(n3.has_parent(&0).await);
+            assert!(n3.has_child(&1).await);
 
             assert!(graph.input.has_child(&1).await);
             assert!(graph.input.has_child(&2).await);
+            assert!(graph.input.has_child(&3).await);
             assert!(graph.output.has_parent(&0).await);
             assert!(graph.output.has_parent(&2).await);
+            assert!(graph.output.has_parent(&3).await);
 
             Ok(())
         }
 
         #[tokio::test]
-        async fn test_add_node_should_return_error_when_input_id_in_children_param() {
+        async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
                     GeneratorMode::Normal => {
@@ -343,7 +350,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_add_node_should_return_error_when_output_id_in_parent_param() {
+        async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
                     GeneratorMode::Normal => {
@@ -359,7 +366,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_insert_between_create_and_inset_new_node_between_specified_nodes()
+        async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new(
                 0,
@@ -376,20 +383,372 @@ mod tests {
             )
             .await
             .unwrap();
+
             let result = graph.insert_between("middle", 0, 1).await;
-
-            assert_eq!(graph.len(), 3);
             assert!(result.is_ok());
+            let n2 = result.unwrap();
 
-            let new_node = result.unwrap();
-            assert_eq!(new_node.id(), &2);
-            assert!(new_node.has_parent(&0).await);
-            assert!(new_node.has_child(&1).await);
+            let n3 = graph.insert_between("middle", 2, 1).await?;
+
+            // input -> n2 -> n3 -> output
+            assert_eq!(graph.len(), 4);
+
+            assert_eq!(n2.id(), &2);
+            assert_eq!(n3.id(), &3);
+
+            assert!(n2.has_parent(&0).await);
+            assert!(n2.has_child(&3).await);
+
+            assert!(n3.has_parent(&2).await);
+            assert!(n3.has_child(&1).await);
 
             assert!(!graph.input.has_child(&1).await);
             assert!(graph.input.has_child(&2).await);
+            assert!(!graph.input.has_child(&3).await);
+            assert!(!graph.output.has_parent(&0).await);
+            assert!(!graph.output.has_parent(&2).await);
+            assert!(graph.output.has_parent(&3).await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                0,
+                "input_data",
+                1,
+                "output_data",
+                2,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            )
+            .await?;
+
+            let result = graph.insert_between("middle2", 0, 1).await;
+            assert!(result.is_ok());
+            let n2 = result.unwrap();
+
+            let n3 = graph.insert_between("middle3", 0, 1).await?;
+
+            // input -> [n2, n3] -> output
+            assert_eq!(graph.len(), 4);
+
+            assert_eq!(n2.id(), &2);
+            assert_eq!(n3.id(), &3);
+
+            assert!(n2.has_parent(&0).await);
+            assert!(n2.has_child(&1).await);
+
+            assert!(n3.has_parent(&0).await);
+            assert!(n3.has_child(&1).await);
+
+            assert!(!graph.input.has_child(&1).await);
+            assert!(graph.input.has_child(&2).await);
+            assert!(graph.input.has_child(&3).await);
+
             assert!(!graph.output.has_parent(&0).await);
             assert!(graph.output.has_parent(&2).await);
+            assert!(graph.output.has_parent(&3).await);
+
+            Ok(())
+        }
+    }
+
+    mod for_id_as_string {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
+            let graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Relaxed)
+                    ),
+                },
+            )
+            .await?;
+
+            assert_eq!(graph.input.id(), "IL");
+            assert_eq!(graph.output.id(), "OL");
+            assert_eq!(graph.len(), 2);
+
+            assert!(graph.input.has_children().await);
+            assert!(graph.input.has_child("OL").await);
+            assert!(graph.output.has_parents().await);
+            assert!(graph.output.has_parent("IL").await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
+            let result = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("IL"),
+                "output_data",
+                1,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Relaxed)
+                    ),
+                },
+            )
+            .await;
+
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_append_node_should_add_new_nodes_with_correct_ids()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await?;
+
+            let new_node = graph
+                .append_node("hidden", &["IL".to_string()], &["OL".to_string()])
+                .await?;
+
+            let new_node2 = graph
+                .append_node(
+                    "hidden2",
+                    &["IL".to_string(), new_node.id().into()],
+                    &["OL".to_string()],
+                )
+                .await?;
+
+            assert_eq!(graph.len(), 4);
+            assert_eq!(new_node.id(), "ML_0");
+            assert_eq!(new_node2.id(), "ML_1");
+
+            assert!(new_node.has_parent("IL").await);
+            assert!(new_node.has_child("OL").await);
+
+            assert!(new_node2.has_parent("IL").await);
+            assert!(new_node2.has_parent("ML_0").await);
+            assert!(new_node2.has_child("OL").await);
+
+            assert!(graph.input.has_child("OL").await);
+            assert!(graph.input.has_child("ML_0").await);
+            assert!(graph.input.has_child("ML_1").await);
+            assert!(graph.output.has_parent("IL").await);
+            assert!(graph.output.has_parent("ML_0").await);
+            assert!(graph.output.has_parent("ML_1").await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_append_node_should_return_error_when_input_id_in_children_param() {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input",
+                String::from("OL"),
+                "output",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+            let result = graph
+                .append_node("hidden", &[String::from("IL")], &[String::from("IL")])
+                .await;
+
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input",
+                String::from("OL"),
+                "output",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+            let result = graph
+                .append_node("hidden", &[String::from("OL")], &[String::from("OL")])
+                .await;
+
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+
+            let result = graph
+                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .await;
+            assert!(result.is_ok());
+            let n0 = result.unwrap();
+
+            let n1 = graph
+                .insert_between("middle", n0.id().into(), String::from("OL"))
+                .await?;
+
+            // input -> n0 -> n1 -> output
+            assert_eq!(graph.len(), 4);
+
+            assert_eq!(n0.id(), "ML_0");
+            assert!(n0.has_parent("IL").await);
+            assert!(n0.has_child(n1.id()).await);
+
+            assert_eq!(n1.id(), "ML_1");
+            assert!(n1.has_parent("ML_0").await);
+            assert!(n1.has_child("OL").await);
+
+            assert!(!graph.input.has_child("OL").await);
+            assert!(graph.input.has_child("ML_0").await);
+            assert!(!graph.input.has_child("ML_2").await);
+            assert!(!graph.output.has_parent("IL").await);
+            assert!(!graph.output.has_parent("ML_0").await);
+            assert!(graph.output.has_parent("ML_1").await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
+        -> Result<(), Box<dyn Error>> {
+            let mut graph = CyclicGraph::new(
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
+                0,
+                |recent_id, mode| match mode {
+                    GeneratorMode::Normal => {
+                        format!(
+                            "ML_{}",
+                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
+                        )
+                    }
+                    GeneratorMode::DryRun => format!(
+                        "ML_{}",
+                        recent_id.load(std::sync::atomic::Ordering::Acquire)
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+
+            let result = graph
+                .insert_between("middle0", String::from("IL"), String::from("OL"))
+                .await;
+            assert!(result.is_ok());
+            let n0 = result.unwrap();
+
+            let n1 = graph
+                .insert_between("middle1", graph.input.id().into(), graph.output.id().into())
+                .await?;
+
+            // input -> [n0, n1] -> output
+            assert_eq!(graph.len(), 4);
+
+            assert_eq!(n0.id(), "ML_0");
+            assert!(n0.has_parent("IL").await);
+            assert!(n0.has_child("OL").await);
+
+            assert_eq!(n1.id(), "ML_1");
+            assert!(n1.has_parent("IL").await);
+            assert!(n1.has_child("OL").await);
+
+            assert!(!graph.input.has_child("OL").await);
+            assert!(graph.input.has_child("ML_0").await);
+            assert!(graph.input.has_child("ML_1").await);
+            assert!(!graph.output.has_parent("IL").await);
+            assert!(graph.output.has_parent("ML_0").await);
+            assert!(graph.output.has_parent("ML_1").await);
 
             Ok(())
         }
