@@ -4,6 +4,8 @@ use tokio::sync::RwLock;
 
 /// A node in a graph with a set of ancestor and descendant nodes, a unique identifier,
 /// and a payload that it is associated with.
+/// I - the identifier type
+/// T - the type of payload data
 #[derive(Debug)]
 pub struct Node<I, T> {
     /// The unique identifier
