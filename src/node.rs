@@ -2,11 +2,20 @@ use std::{borrow::Borrow, collections::HashSet, hash::Hash, sync::Arc};
 
 use tokio::sync::RwLock;
 
+/// A node in a graph with a set of ancestor and descendant nodes, a unique identifier,
+/// and a payload that it is associated with.
 #[derive(Debug)]
 pub struct Node<I, T> {
+    /// The unique identifier
     id: I,
+
+    /// The payload
     data: Arc<RwLock<T>>,
+
+    /// The parent ids set
     parent_ids: RwLock<HashSet<I>>,
+
+    /// The child ids set
     child_ids: RwLock<HashSet<I>>,
 }
 
@@ -14,6 +23,17 @@ impl<I, T> Node<I, T>
 where
     I: Clone + Eq + PartialEq + Hash,
 {
+    /// The node constructor
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cyclic_graph::node::Node;
+    ///
+    /// let node_i32 = Node::new(1, "one");
+    /// let node_usize = Node::<usize, &str>::new(0, "zero");
+    /// let node_string_id = Node::new(String::from("HL_0"), vec![0_usize, 1, 2]);
+    /// ```
     pub fn new(id: I, data: T) -> Self {
         Self {
             id,
@@ -23,28 +43,34 @@ where
         }
     }
 
+    /// Returns id reference
     pub fn id(&self) -> &I {
         &self.id
     }
 
+    /// Returns wrapped payload data
     pub fn data(&self) -> Arc<RwLock<T>> {
         self.data.clone()
     }
 
+    /// Changes wrapped payload data
     pub async fn set_data(&self, value: T) {
         *self.data.write().await = value
     }
 
+    /// Creates link to specified child and from child to current node as to parent
     pub async fn link_child(&self, child: Arc<Node<I, T>>) -> bool {
         self.child_ids.write().await.insert(child.id().clone())
             && child.parent_ids.write().await.insert(self.id().clone())
     }
 
+    /// Removes links between child and current node as parent
     pub async fn unlink_child(&self, child: Arc<Node<I, T>>) -> bool {
         self.child_ids.write().await.remove(child.id())
             && child.parent_ids.write().await.remove(self.id())
     }
 
+    /// Checks if current node has child node specified by id
     pub async fn has_child<Q: ?Sized>(&self, id: &Q) -> bool
     where
         I: Borrow<Q>,
@@ -53,10 +79,12 @@ where
         self.child_ids.read().await.contains(id)
     }
 
+    /// Checks if current node has connections to children
     pub async fn has_children(&self) -> bool {
         !self.child_ids.read().await.is_empty()
     }
 
+    /// Returns vector with child ids
     pub async fn child_ids(&self) -> Vec<I> {
         self.child_ids
             .read()
@@ -65,17 +93,19 @@ where
             .map(|id| id.clone())
             .collect::<Vec<_>>()
     }
-
+    /// Creates link to specified parent and from parent to current node as to child
     pub async fn link_parent(&self, parent: Arc<Node<I, T>>) -> bool {
         self.parent_ids.write().await.insert(parent.id().clone())
             && parent.child_ids.write().await.insert(self.id().clone())
     }
 
+    /// Removes links between parent and current node as child
     pub async fn unlink_parent(&self, parent: Arc<Node<I, T>>) -> bool {
         self.parent_ids.write().await.remove(parent.id())
             && parent.child_ids.write().await.remove(self.id())
     }
 
+    /// Checks if current node has parent node specified by id
     pub async fn has_parent<Q: ?Sized>(&self, id: &Q) -> bool
     where
         I: Borrow<Q>,
@@ -84,10 +114,12 @@ where
         self.parent_ids.read().await.contains(id)
     }
 
+    /// Checks if current node has connections to parents
     pub async fn has_parents(&self) -> bool {
         !self.parent_ids.read().await.is_empty()
     }
 
+    /// Returns vector with parent ids
     pub async fn parent_ids(&self) -> Vec<I> {
         self.parent_ids
             .read()
