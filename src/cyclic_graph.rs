@@ -170,7 +170,7 @@ where
         })
     }
 
-    /// Append node to graph with create links to specified
+    /// Appends node to graph with create links to specified
     /// parents `parent_ids` and children `child_ids` by ids.
     ///
     /// The payload node data sets by `data` parameter
@@ -242,7 +242,7 @@ where
         Ok(new_node.clone())
     }
 
-    /// Insert node to graph with inset into links between
+    /// Inserts node to graph with inset into links between
     /// parent `parent_id` and children `child_id` by ids.
     ///
     /// The payload node data sets by `data` parameter
@@ -318,6 +318,42 @@ where
         Ok(new_node.clone())
     }
 
+    /// Removes node to graph with restoring links between
+    /// parent `parent_id` and children `child_id` by ids.
+    ///
+    /// Returns boolean result if removing was success
+    /// or error if trying to remove input or output nodes
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::{sync::atomic::Ordering, error::Error};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let mut graph = CyclicGraph::new(
+    ///         0,
+    ///         "start",
+    ///         1,
+    ///         "end",
+    ///         2,
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
+    ///         },
+    ///     ).await?;
+    ///
+    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///
+    ///     assert_eq!(graph.len().await, 3);
+    ///
+    ///     assert!(graph.remove(&2).await?);
+    ///     assert_eq!(graph.len().await, 2);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn remove(&mut self, id: &I) -> Result<bool, Box<dyn Error>> {
         let r_nodes = self.nodes.read().await;
         let node = r_nodes.get(id).cloned();
