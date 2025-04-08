@@ -319,7 +319,7 @@ where
     }
 
     /// Removes node to graph with restoring links between
-    /// parent `parent_id` and children `child_id` by ids.
+    /// parents and children specified by `id` reference.
     ///
     /// Returns boolean result if removing was success
     /// or error if trying to remove input or output nodes
@@ -405,6 +405,37 @@ where
         }
     }
 
+    /// Returns the option of wrapped node reference from graph
+    /// specified by `id` reference
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::{sync::atomic::Ordering, error::Error};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let mut graph = CyclicGraph::new(
+    ///         0,
+    ///         "start",
+    ///         1,
+    ///         "end",
+    ///         2,
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
+    ///         },
+    ///     ).await?;
+    ///
+    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///
+    ///     assert_eq!(graph.get(&0).await.unwrap().id(), &0);
+    ///     assert_eq!(graph.get(&2).await.unwrap().id(), &2);
+    ///     assert!(graph.get(&3).await.is_none());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn get(&self, id: &I) -> Option<Arc<Node<I, T>>> {
         self.nodes.read().await.get(id).cloned()
     }
