@@ -9,16 +9,7 @@ use std::{
 use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
-use crate::{error::CyclicGraphError, node::Node};
-
-/// The mode of id generator running
-pub enum GeneratorMode {
-    /// In normal mode generator should generate next unique id
-    Normal,
-
-    /// In dry run mode generator should return initial id to compare with input and output nodes ids
-    DryRun,
-}
+use crate::{error::CyclicGraphError, node::Node, GeneratorMode, IdGenerator};
 
 /// A graph with one input node, many intermediate nodes, and one output node.
 /// The graph keeps track of the uniqueness of node identifiers,
@@ -29,7 +20,7 @@ pub enum GeneratorMode {
 /// and the output is always an ending point for other nodes.
 /// I - the nodes identifier type
 /// T - the type of nodes payload data
-pub struct CyclicGraph<I, T, G>
+pub struct CyclicGraph<I, T, G = fn(&AtomicUsize, GeneratorMode) -> I>
 where
     G: Fn(&AtomicUsize, GeneratorMode) -> I,
 {
@@ -47,6 +38,30 @@ where
 
     /// Helper to id generator function
     recent_id: AtomicUsize,
+}
+
+impl<I, T> CyclicGraph<I, T, fn(&AtomicUsize, GeneratorMode) -> I>
+where
+    I: Clone + Eq + Hash + Debug + Display + Send + Sync + 'static,
+    T: Send + Sync,
+    (): IdGenerator<I>,
+{
+    pub async fn new_default(
+        input_id: I,
+        input_data: T,
+        output_id: I,
+        output_data: T,
+        start_id_idx: usize,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::new(
+            input_id,
+            input_data,
+            output_id,
+            output_data,
+            start_id_idx,
+            |recent_id, mode| <() as IdGenerator<I>>::generate_id(recent_id, mode),
+        ).await
+    }
 }
 
 impl<I, T, G> CyclicGraph<I, T, G>
@@ -505,22 +520,16 @@ mod tests {
     use super::*;
 
     mod for_id_as_usize {
-        use std::sync::atomic::Ordering;
+
 
         use super::*;
 
         #[tokio::test]
         async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -536,16 +545,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
-            let result = CyclicGraph::new(
-                0,
-                "input_data",
-                0,
-                "output_data",
+            let result = CyclicGraph::<usize, &str>::new_default(
+                0, "input_data",
+                0, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await;
 
@@ -554,16 +557,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_input_node() {
-            let result = CyclicGraph::new(
+            let result = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 0,
-                "input_data",
-                1,
-                "output_data",
-                0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await;
 
@@ -572,16 +569,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_output_node() {
-            let result = CyclicGraph::new(
-                0,
-                "input_data",
+            let result = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 1,
-                "output_data",
-                1,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await;
 
@@ -591,10 +582,7 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let mut graph =
-                CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                })
+                CyclicGraph::new_default(0, "input", 1, "output", 2)
                 .await?;
             let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
             let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
@@ -621,10 +609,7 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let mut graph =
-                CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                })
+                CyclicGraph::new_default(0, "input", 1, "output", 2)
                 .await
                 .unwrap();
             let result = graph.append_node("hidden", &[0], &[0]).await;
@@ -635,10 +620,7 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let mut graph =
-                CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                })
+                CyclicGraph::new_default(0, "input", 1, "output", 2)
                 .await
                 .unwrap();
             let result = graph.append_node("hidden", &[1], &[1]).await;
@@ -649,16 +631,10 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
-                2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
+                2
             )
             .await
             .unwrap();
@@ -694,16 +670,10 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -739,16 +709,10 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_serial_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -772,16 +736,10 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_parallel_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -802,16 +760,10 @@ mod tests {
         #[tokio::test]
         async fn test_remove_should_delete_specified_node_and_prolongate_links()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -960,16 +912,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                0,
-                "input_data",
-                1,
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                0, "input_data",
+                1, "output_data",
                 2,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-                },
             )
             .await?;
 
@@ -997,24 +943,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Relaxed)
-                    ),
-                },
             )
             .await?;
 
@@ -1032,24 +964,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
-            let result = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("IL"),
-                "output_data",
+            let result = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("IL"), "output_data",
                 1,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Relaxed)
-                    ),
-                },
             )
             .await;
 
@@ -1059,24 +977,10 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_add_new_nodes_with_correct_ids()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await?;
 
@@ -1115,24 +1019,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input",
-                String::from("OL"),
-                "output",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input",
+                String::from("OL"), "output",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await
             .unwrap();
@@ -1145,24 +1035,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input",
-                String::from("OL"),
-                "output",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input",
+                String::from("OL"), "output",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await
             .unwrap();
@@ -1176,24 +1052,10 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await
             .unwrap();
@@ -1232,24 +1094,10 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await
             .unwrap();
@@ -1287,24 +1135,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await?;
 
@@ -1331,24 +1165,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await?;
 
@@ -1372,24 +1192,10 @@ mod tests {
 
         #[tokio::test]
         async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new(
-                String::from("IL"),
-                "input_data",
-                String::from("OL"),
-                "output_data",
+            let mut graph = CyclicGraph::new_default(
+                String::from("IL"), "input_data",
+                String::from("OL"), "output_data",
                 0,
-                |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        format!(
-                            "ML_{}",
-                            recent_id.fetch_add(1, std::sync::atomic::Ordering::Release)
-                        )
-                    }
-                    GeneratorMode::DryRun => format!(
-                        "ML_{}",
-                        recent_id.load(std::sync::atomic::Ordering::Acquire)
-                    ),
-                },
             )
             .await?;
 
