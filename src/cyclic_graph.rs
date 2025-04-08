@@ -440,10 +440,12 @@ where
         self.nodes.read().await.get(id).cloned()
     }
 
+    /// Returns number of nodes in the graph.
     pub async fn len(&self) -> usize {
         self.nodes.read().await.len()
     }
 
+    /// Returns the path of the graph.
     pub async fn traverse_from_input_node(&self) -> Vec<I> {
         let visited = Arc::new(RwLock::new(HashSet::<I>::new()));
         let result = Arc::new(RwLock::new(Vec::<I>::new()));
