@@ -11,19 +11,41 @@ use tokio::sync::RwLock;
 
 use crate::{error::CyclicGraphError, node::Node};
 
+/// The mode of id generator running
 pub enum GeneratorMode {
+    /// In normal mode generator should generate next unique id
     Normal,
+
+    /// In dry run mode generator should return initial id to compare with input and output nodes ids
     DryRun,
 }
 
+/// A graph with one input node, many intermediate nodes, and one output node.
+/// The graph keeps track of the uniqueness of node identifiers,
+/// allowing you to add new nodes and create connections to existing nodes within the graph.
+/// In the initial state, the graph has only input and output nodes that are connected.
+/// These nodes cannot be removed or moved.
+/// The input node is always the starting point for other nodes in the graph,
+/// and the output is always an ending point for other nodes.
+/// I - the nodes identifier type
+/// T - the type of nodes payload data
 pub struct CyclicGraph<I, T, G>
 where
     G: Fn(&AtomicUsize, GeneratorMode) -> I,
 {
+    /// The input node
     input: Arc<Node<I, T>>,
+
+    /// The output node
     output: Arc<Node<I, T>>,
+
+    /// The map of nodes
     nodes: Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>,
+
+    /// The id generator function
     id_generator: G,
+
+    /// Helper to id generator function
     recent_id: AtomicUsize,
 }
 
@@ -33,6 +55,82 @@ where
     T: Send + Sync,
     G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
 {
+    /// Creates new graph with input and output nodes.
+    /// Parameters are using for initial graph configuration.
+    /// Using `input_id` - to specify input node identifier,
+    /// `input_data` - to specify input node content data,
+    /// `output_id` - to specify output identifier which should differ from input_id,
+    /// `output_data` - to specify output node content data,
+    /// `start_id_idx` - is usize number from which start counter to generate unique
+    ///  middle nodes. Generated id should be differ from input_id and output_id.
+    /// The `id_generator` - is using to set generator function executed when new node
+    /// would append or insert into graph.
+    ///
+    /// # Example for graph with usize id nodes:
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::sync::atomic::Ordering;
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let graph = CyclicGraph::new(
+    ///         0_usize, // input_id
+    ///         "input_data", // payload data for input node
+    ///         1, // output_id
+    ///         "output_data", // payload data for output node
+    ///         2, // start_id_idx - from this number generator will be generate id for new nodes
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => {
+    ///                 recent_id.fetch_add(1, Ordering::Relaxed)
+    ///             }
+    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
+    ///         }
+    ///     )
+    ///     .await?;
+    ///
+    ///     assert_eq!(graph.len().await, 2);
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # Example for graph with String id node:
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::{sync::atomic::Ordering, error::Error};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let graph = CyclicGraph::new(
+    ///         String::from("IL"), // input_id
+    ///         "input", // input_data
+    ///         String::from("OL"), // output_data
+    ///         "output", // output_data
+    ///         0, // start_id_idx
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => {
+    ///                 format!(
+    ///                     "ML_{}",
+    ///                     recent_id.fetch_add(1, Ordering::Release),
+    ///                 )
+    ///             }
+    ///             GeneratorMode::DryRun => {
+    ///                 format!(
+    ///                     "ML_{}",
+    ///                     recent_id.load(Ordering::Acquire),
+    ///                 )
+    ///             }
+    ///         }
+    ///     )
+    ///         .await?;
+    ///
+    ///     assert_eq!(graph.len().await, 2);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn new(
         input_id: I,
         input_data: T,
@@ -72,6 +170,37 @@ where
         })
     }
 
+    /// Append node to graph with create links to specified
+    /// parents `parent_ids` and children `child_ids` by ids.
+    ///
+    /// The payload node data sets by `data` parameter
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::{sync::atomic::Ordering, error::Error};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let mut graph = CyclicGraph::new(
+    ///         0,
+    ///         "start",
+    ///         1,
+    ///         "end",
+    ///         2,
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
+    ///         },
+    ///     ).await?;
+    ///
+    ///     let n = graph.append_node("hidden", &[0], &[1]).await?;
+    ///
+    ///     assert_eq!(graph.len().await, 3);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn append_node(
         &mut self,
         data: T,
@@ -276,6 +405,8 @@ mod tests {
     use super::*;
 
     mod for_id_as_usize {
+        use std::sync::atomic::Ordering;
+
         use super::*;
 
         #[tokio::test]
@@ -287,10 +418,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
@@ -314,10 +443,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await;
@@ -334,10 +461,8 @@ mod tests {
                 "output_data",
                 0,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await;
@@ -354,10 +479,8 @@ mod tests {
                 "output_data",
                 1,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await;
@@ -369,10 +492,8 @@ mod tests {
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 })
                 .await?;
             let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
@@ -401,10 +522,8 @@ mod tests {
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 })
                 .await
                 .unwrap();
@@ -417,10 +536,8 @@ mod tests {
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let mut graph =
                 CyclicGraph::new(0, "input", 1, "output", 2, |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 })
                 .await
                 .unwrap();
@@ -439,10 +556,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await
@@ -486,10 +601,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
@@ -533,10 +646,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
@@ -568,10 +679,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
@@ -600,10 +709,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
@@ -760,10 +867,8 @@ mod tests {
                 "output_data",
                 2,
                 |recent_id, mode| match mode {
-                    GeneratorMode::Normal => {
-                        recent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    }
-                    GeneratorMode::DryRun => recent_id.load(std::sync::atomic::Ordering::Relaxed),
+                    GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+                    GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
                 },
             )
             .await?;
