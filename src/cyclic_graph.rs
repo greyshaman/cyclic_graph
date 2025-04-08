@@ -242,6 +242,37 @@ where
         Ok(new_node.clone())
     }
 
+    /// Insert node to graph with inset into links between
+    /// parent `parent_id` and children `child_id` by ids.
+    ///
+    /// The payload node data sets by `data` parameter
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use std::{sync::atomic::Ordering, error::Error};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let mut graph = CyclicGraph::new(
+    ///         0,
+    ///         "start",
+    ///         1,
+    ///         "end",
+    ///         2,
+    ///         |recent_id, mode| match mode {
+    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
+    ///         },
+    ///     ).await?;
+    ///
+    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///
+    ///     assert_eq!(graph.len().await, 3);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn insert_between(
         &mut self,
         data: T,
