@@ -30,7 +30,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use cyclic_graph::node::Node;
+    /// use cyclic_graph::Node;
     ///
     /// let node_i32 = Node::new(1, "one");
     /// let node_usize = Node::<usize, &str>::new(0, "zero");
