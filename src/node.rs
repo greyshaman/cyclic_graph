@@ -73,10 +73,10 @@ where
     }
 
     /// Checks if current node has child node specified by id
-    pub async fn has_child<Q: ?Sized>(&self, id: &Q) -> bool
+    pub async fn has_child<Q>(&self, id: &Q) -> bool
     where
         I: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.child_ids.read().await.contains(id)
     }
@@ -92,7 +92,7 @@ where
             .read()
             .await
             .iter()
-            .map(|id| id.clone())
+            .cloned()
             .collect::<Vec<_>>()
     }
     /// Creates link to specified parent and from parent to current node as to child
@@ -108,10 +108,10 @@ where
     }
 
     /// Checks if current node has parent node specified by id
-    pub async fn has_parent<Q: ?Sized>(&self, id: &Q) -> bool
+    pub async fn has_parent<Q>(&self, id: &Q) -> bool
     where
         I: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.parent_ids.read().await.contains(id)
     }
@@ -127,7 +127,7 @@ where
             .read()
             .await
             .iter()
-            .map(|id| id.clone())
+            .cloned()
             .collect::<Vec<_>>()
     }
 }
