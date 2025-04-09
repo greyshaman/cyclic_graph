@@ -9,7 +9,9 @@ use std::{
 use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
-use crate::{error::CyclicGraphError, node::Node, GeneratorMode, IdGenerator};
+use crate::{GeneratorMode, IdGenerator, error::CyclicGraphError, node::Node};
+
+pub type NodesMap<I, T> = Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>;
 
 /// A graph with one input node, many intermediate nodes, and one output node.
 /// The graph keeps track of the uniqueness of node identifiers,
@@ -31,7 +33,7 @@ where
     output: Arc<Node<I, T>>,
 
     /// The map of nodes
-    nodes: Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>,
+    nodes: NodesMap<I, T>,
 
     /// The id generator function
     id_generator: G,
@@ -60,7 +62,8 @@ where
             output_data,
             start_id_idx,
             |recent_id, mode| <() as IdGenerator<I>>::generate_id(recent_id, mode),
-        ).await
+        )
+        .await
     }
 }
 
@@ -456,6 +459,7 @@ where
     }
 
     /// Returns number of nodes in the graph.
+    #[allow(clippy::len_without_is_empty)]
     pub async fn len(&self) -> usize {
         self.nodes.read().await.len()
     }
@@ -495,8 +499,7 @@ where
         let mut queue = Vec::<Arc<Node<I, T>>>::new();
 
         queue.push(from_node.clone());
-        while !queue.is_empty() {
-            let node = queue.pop().expect("queue is not empty");
+        while let Some(node) = queue.pop() {
             if node.id() == goal_node.id() {
                 return true;
             }
@@ -521,17 +524,11 @@ mod tests {
 
     mod for_id_as_usize {
 
-
         use super::*;
 
         #[tokio::test]
         async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             assert_eq!(graph.input.id(), &0);
             assert_eq!(graph.output.id(), &1);
@@ -545,45 +542,29 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
-            let result = CyclicGraph::<usize, &str>::new_default(
-                0, "input_data",
-                0, "output_data",
-                2,
-            )
-            .await;
+            let result =
+                CyclicGraph::<usize, &str>::new_default(0, "input_data", 0, "output_data", 2).await;
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_input_node() {
-            let result = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                0,
-            )
-            .await;
+            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 0).await;
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_output_node() {
-            let result = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                1,
-            )
-            .await;
+            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 1).await;
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph =
-                CyclicGraph::new_default(0, "input", 1, "output", 2)
-                .await?;
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).await?;
             let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
             let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
 
@@ -608,8 +589,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let mut graph =
-                CyclicGraph::new_default(0, "input", 1, "output", 2)
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)
                 .await
                 .unwrap();
             let result = graph.append_node("hidden", &[0], &[0]).await;
@@ -619,8 +599,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let mut graph =
-                CyclicGraph::new_default(0, "input", 1, "output", 2)
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)
                 .await
                 .unwrap();
             let result = graph.append_node("hidden", &[1], &[1]).await;
@@ -631,13 +610,9 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2
-            )
-            .await
-            .unwrap();
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)
+                .await
+                .unwrap();
 
             let result = graph.insert_between("middle", 0, 1).await;
             assert!(result.is_ok());
@@ -670,12 +645,7 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             let result = graph.insert_between("middle2", 0, 1).await;
             assert!(result.is_ok());
@@ -709,12 +679,7 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_serial_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             let n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -736,12 +701,7 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_parallel_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             let _n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -760,12 +720,7 @@ mod tests {
         #[tokio::test]
         async fn test_remove_should_delete_specified_node_and_prolongate_links()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             // Graph state before removing n4 node
             //               input
@@ -912,12 +867,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
-                0, "input_data",
-                1, "output_data",
-                2,
-            )
-            .await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
 
             let _n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -944,8 +894,10 @@ mod tests {
         #[tokio::test]
         async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
             let graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await?;
@@ -965,8 +917,10 @@ mod tests {
         #[tokio::test]
         async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
             let result = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("IL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("IL"),
+                "output_data",
                 1,
             )
             .await;
@@ -978,8 +932,10 @@ mod tests {
         async fn test_append_node_should_add_new_nodes_with_correct_ids()
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await?;
@@ -1020,8 +976,10 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input",
-                String::from("OL"), "output",
+                String::from("IL"),
+                "input",
+                String::from("OL"),
+                "output",
                 0,
             )
             .await
@@ -1036,8 +994,10 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input",
-                String::from("OL"), "output",
+                String::from("IL"),
+                "input",
+                String::from("OL"),
+                "output",
                 0,
             )
             .await
@@ -1053,8 +1013,10 @@ mod tests {
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await
@@ -1095,8 +1057,10 @@ mod tests {
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await
@@ -1136,8 +1100,10 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await?;
@@ -1166,8 +1132,10 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await?;
@@ -1193,8 +1161,10 @@ mod tests {
         #[tokio::test]
         async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
-                String::from("IL"), "input_data",
-                String::from("OL"), "output_data",
+                String::from("IL"),
+                "input_data",
+                String::from("OL"),
+                "output_data",
                 0,
             )
             .await?;
