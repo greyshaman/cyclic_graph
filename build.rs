@@ -25,11 +25,11 @@ fn main() {
 
     // PATH to destination file
     let dst_path = PathBuf::from_str("README.md")
-        .expect(format!("incorrect filename for {README_FILE}").as_str());
+        .unwrap_or_else(|_| panic!("incorrect filename for {README_FILE}"));
 
     // reading the source template file
     let content = fs::read_to_string(src_path)
-        .expect(format!("Failed to read template {TEMPLATE_FILE}").as_str());
+        .unwrap_or_else(|_| panic!("Failed to read template {TEMPLATE_FILE}"));
 
     // Replace placeholders in template
     let new_content = content
@@ -38,7 +38,7 @@ fn main() {
 
     // Write processed readme content to file
     fs::write(&dst_path, new_content)
-        .expect(format!("Failed to write processed {README_FILE} file").as_str());
+        .unwrap_or_else(|_| panic!("Failed to write processed {README_FILE} file"));
 
     // Rerun cargo again if template was changed
     println!("cargo::rerun-if-changed={TEMPLATE_FILE}");
