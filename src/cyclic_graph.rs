@@ -48,7 +48,15 @@ where
     T: Send + Sync,
     (): IdGenerator<I>,
 {
-    pub async fn new_default(
+    /// Creates new graph with default id generator implementation.
+    /// Parameters are using for initial graph configuration.
+    /// Using `input_id` - to specify input node identifier,
+    /// `input_data` - to specify input node content data,
+    /// `output_id` - to specify output identifier which should differ from input_id,
+    /// `output_data` - to specify output node content data,
+    /// `start_id_idx` - id usize number from which start counter to generate unique
+    /// middle nodes. Generated id should be differ from input_id and output_id.
+    pub fn new_default(
         input_id: I,
         input_data: T,
         output_id: I,
@@ -63,7 +71,6 @@ where
             start_id_idx,
             |recent_id, mode| <() as IdGenerator<I>>::generate_id(recent_id, mode),
         )
-        .await
     }
 }
 
@@ -105,8 +112,7 @@ where
     ///             }
     ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
     ///         }
-    ///     )
-    ///     .await?;
+    ///     )?;
     ///
     ///     assert_eq!(graph.len().await, 2);
     ///     Ok(())
@@ -124,7 +130,7 @@ where
     ///     let graph = CyclicGraph::new(
     ///         String::from("IL"), // input_id
     ///         "input", // input_data
-    ///         String::from("OL"), // output_data
+    ///         String::from("OL"), // output_id
     ///         "output", // output_data
     ///         0, // start_id_idx
     ///         |recent_id, mode| match mode {
@@ -141,15 +147,14 @@ where
     ///                 )
     ///             }
     ///         }
-    ///     )
-    ///         .await?;
+    ///     )?;
     ///
     ///     assert_eq!(graph.len().await, 2);
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub async fn new(
+    pub fn new(
         input_id: I,
         input_data: T,
         output_id: I,
@@ -170,7 +175,7 @@ where
 
         let nodes = Arc::new(RwLock::new(nodes));
 
-        input.link_child(output.clone()).await;
+        input.try_link_child(output.clone())?;
 
         let recent_id = AtomicUsize::new(start_id_idx);
         let try_id = id_generator(&recent_id, GeneratorMode::DryRun);
@@ -193,6 +198,35 @@ where
     ///
     /// The payload node data sets by `data` parameter
     ///
+    /// Before:
+    ///
+    /// #       +-------------+
+    /// #       | Parent Node |
+    /// #       +-------------+
+    /// #               |
+    /// #               |
+    /// #               |
+    /// #               |
+    /// #               V
+    /// #       +------------+
+    /// #       | Child Node |
+    /// #       +------------+
+    ///
+    /// After append:
+    ///
+    /// #       +-------------+
+    /// #       | Parent Node |-----+
+    /// #       +-------------+     |
+    /// #               |           V
+    /// #               |      +----------+
+    /// #               |      | New Node |
+    /// #               |      +----------+
+    /// #               |           |
+    /// #               V           |
+    /// #       +------------+      |
+    /// #       | Child Node |<-----+
+    /// #       +------------+
+    ///
     /// # Example
     ///
     /// ```rust
@@ -211,7 +245,7 @@ where
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
     ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
     ///         },
-    ///     ).await?;
+    ///     )?;
     ///
     ///     let n = graph.append_node("hidden", &[0], &[1]).await?;
     ///
@@ -265,6 +299,39 @@ where
     ///
     /// The payload node data sets by `data` parameter
     ///
+    /// Before:
+    ///
+    /// #        +-------------+
+    /// #        | Parent Node |
+    /// #        +-------------+
+    /// #                |
+    /// #                |
+    /// #                |
+    /// #                |
+    /// #                V
+    /// #        +------------+
+    /// #        | Child Node |
+    /// #        +------------+
+    ///
+    /// After insert_between:
+    ///
+    /// #        +-------------+
+    /// #        | Parent Node |
+    /// #        +-------------+
+    /// #                |
+    /// #                V
+    /// #           +----------+
+    /// #           | New Node |
+    /// #           +----------+
+    /// #                |
+    /// #                |
+    /// #                |
+    /// #                V
+    /// #        +------------+
+    /// #        | Child Node |
+    /// #        +------------+
+    ///
+    ///
     /// # Example
     ///
     /// ```rust
@@ -283,7 +350,7 @@ where
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
     ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
     ///         },
-    ///     ).await?;
+    ///     )?;
     ///
     ///     let n = graph.insert_between("hidden", 0, 1).await?;
     ///
@@ -360,7 +427,7 @@ where
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
     ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
     ///         },
-    ///     ).await?;
+    ///     )?;
     ///
     ///     let n = graph.insert_between("hidden", 0, 1).await?;
     ///
@@ -444,7 +511,7 @@ where
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
     ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
     ///         },
-    ///     ).await?;
+    ///     )?;
     ///
     ///     let n = graph.insert_between("hidden", 0, 1).await?;
     ///
@@ -528,7 +595,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             assert_eq!(graph.input.id(), &0);
             assert_eq!(graph.output.id(), &1);
@@ -543,28 +610,28 @@ mod tests {
         #[tokio::test]
         async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
             let result =
-                CyclicGraph::<usize, &str>::new_default(0, "input_data", 0, "output_data", 2).await;
+                CyclicGraph::<usize, &str>::new_default(0, "input_data", 0, "output_data", 2);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_input_node() {
-            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 0).await;
+            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 0);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_new_should_return_error_when_start_id_idx_same_of_output_node() {
-            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 1).await;
+            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 1);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)?;
             let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
             let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
 
@@ -589,9 +656,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)
-                .await
-                .unwrap();
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).unwrap();
             let result = graph.append_node("hidden", &[0], &[0]).await;
 
             assert!(result.is_err());
@@ -599,9 +664,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)
-                .await
-                .unwrap();
+            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).unwrap();
             let result = graph.append_node("hidden", &[1], &[1]).await;
 
             assert!(result.is_err());
@@ -610,9 +673,7 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)
-                .await
-                .unwrap();
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).unwrap();
 
             let result = graph.insert_between("middle", 0, 1).await;
             assert!(result.is_ok());
@@ -645,7 +706,7 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             let result = graph.insert_between("middle2", 0, 1).await;
             assert!(result.is_ok());
@@ -679,7 +740,7 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_serial_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             let n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -701,7 +762,7 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_parallel_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             let _n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -720,7 +781,7 @@ mod tests {
         #[tokio::test]
         async fn test_remove_should_delete_specified_node_and_prolongate_links()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             // Graph state before removing n4 node
             //               input
@@ -867,7 +928,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).await?;
+            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
 
             let _n2 = graph.insert_between("middle2", 0, 1).await?;
 
@@ -899,8 +960,7 @@ mod tests {
                 String::from("OL"),
                 "output_data",
                 0,
-            )
-            .await?;
+            )?;
 
             assert_eq!(graph.input.id(), "IL");
             assert_eq!(graph.output.id(), "OL");
@@ -922,8 +982,7 @@ mod tests {
                 String::from("IL"),
                 "output_data",
                 1,
-            )
-            .await;
+            );
 
             assert!(result.is_err());
         }
@@ -937,8 +996,7 @@ mod tests {
                 String::from("OL"),
                 "output_data",
                 0,
-            )
-            .await?;
+            )?;
 
             let new_node = graph
                 .append_node("hidden", &["IL".to_string()], &["OL".to_string()])
@@ -982,7 +1040,6 @@ mod tests {
                 "output",
                 0,
             )
-            .await
             .unwrap();
             let result = graph
                 .append_node("hidden", &[String::from("IL")], &[String::from("IL")])
@@ -1000,7 +1057,6 @@ mod tests {
                 "output",
                 0,
             )
-            .await
             .unwrap();
             let result = graph
                 .append_node("hidden", &[String::from("OL")], &[String::from("OL")])
@@ -1019,7 +1075,6 @@ mod tests {
                 "output_data",
                 0,
             )
-            .await
             .unwrap();
 
             let result = graph
@@ -1063,7 +1118,6 @@ mod tests {
                 "output_data",
                 0,
             )
-            .await
             .unwrap();
 
             let result = graph
@@ -1105,8 +1159,7 @@ mod tests {
                 String::from("OL"),
                 "output_data",
                 0,
-            )
-            .await?;
+            )?;
 
             let n0 = graph
                 .insert_between("middle", String::from("IL"), String::from("OL"))
@@ -1137,8 +1190,7 @@ mod tests {
                 String::from("OL"),
                 "output_data",
                 0,
-            )
-            .await?;
+            )?;
 
             let _n0 = graph
                 .insert_between("middle", String::from("IL"), String::from("OL"))
@@ -1166,8 +1218,7 @@ mod tests {
                 String::from("OL"),
                 "output_data",
                 0,
-            )
-            .await?;
+            )?;
 
             // input -> [n0, n1 -> n2] -> output
 
