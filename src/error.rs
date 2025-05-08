@@ -26,4 +26,12 @@ pub enum CyclicGraphError<I> {
     /// The error wes caused when trying add node with non-unique id
     #[error("Entered id `{0}` is not unique")]
     NonUniqueId(I),
+
+    /// The error was caused when cannot set write lock on RwLock
+    #[error("Cannot set write lock")]
+    CannotSetWriteLock,
+
+    /// The error was caused when cannot set read lock on RwLock
+    #[error("Cannot set read lock")]
+    CannotSetReadLock,
 }
