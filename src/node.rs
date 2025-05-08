@@ -2,6 +2,8 @@ use std::{borrow::Borrow, collections::HashSet, hash::Hash, sync::Arc};
 
 use tokio::sync::RwLock;
 
+use crate::error::CyclicGraphError;
+
 /// A node in a graph with a set of ancestor and descendant nodes, a unique identifier,
 /// and a payload that it is associated with.
 /// I - the node identifier type
@@ -66,6 +68,24 @@ where
             && child.parent_ids.write().await.insert(self.id().clone())
     }
 
+    /// Creates link to specified child and from child to current node as to parent synchronously
+    pub fn try_link_child(&self, child: Arc<Node<I, T>>) -> Result<bool, CyclicGraphError<I>> {
+        let link_child_id_res = self
+            .child_ids
+            .try_write()
+            .map(|mut src_child_ids| src_child_ids.insert(child.id().clone()))
+            .map_err(|_| CyclicGraphError::CannotSetWriteLock)?;
+        if link_child_id_res {
+            child
+                .parent_ids
+                .try_write()
+                .map(|mut parent_ids| parent_ids.insert(self.id().clone()))
+                .map_err(|_| CyclicGraphError::CannotSetWriteLock)
+        } else {
+            Ok(link_child_id_res)
+        }
+    }
+
     /// Removes links between child and current node as parent
     pub async fn unlink_child(&self, child: Arc<Node<I, T>>) -> bool {
         self.child_ids.write().await.remove(child.id())
@@ -99,6 +119,24 @@ where
     pub async fn link_parent(&self, parent: Arc<Node<I, T>>) -> bool {
         self.parent_ids.write().await.insert(parent.id().clone())
             && parent.child_ids.write().await.insert(self.id().clone())
+    }
+
+    /// Creates link to specified parent and from parent to current node as to child synchronously
+    pub fn try_link_parent(&self, parent: Arc<Node<I, T>>) -> Result<bool, CyclicGraphError<I>> {
+        let link_parent_id_res = self
+            .parent_ids
+            .try_write()
+            .map(|mut src_parent_ids| src_parent_ids.insert(parent.id().clone()))
+            .map_err(|_| CyclicGraphError::CannotSetWriteLock)?;
+        if link_parent_id_res {
+            parent
+                .child_ids
+                .try_write()
+                .map(|mut child_ids| child_ids.insert(self.id().clone()))
+                .map_err(|_| CyclicGraphError::CannotSetWriteLock)
+        } else {
+            Ok(link_parent_id_res)
+        }
     }
 
     /// Removes links between parent and current node as child
@@ -203,12 +241,36 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_linking_two_nodes_by_try_link_child() {
+            let root_node = Arc::new(Node::new(0_usize, "root"));
+            let child_node = Arc::new(Node::new(1_usize, "child"));
+
+            let op_res = root_node.try_link_child(child_node.clone());
+            assert!(op_res.is_ok());
+            assert!(op_res.unwrap());
+
+            assert!(!root_node.has_parents().await);
+            assert!(root_node.has_children().await);
+            assert!(child_node.has_parents().await);
+            assert!(!child_node.has_children().await);
+        }
+
+        #[tokio::test]
         async fn test_second_link_child_attempt_should_return_false() {
             let parent = Arc::new(Node::new(0_usize, "parent"));
             let child = Arc::new(Node::new(1_usize, "child"));
 
             assert!(parent.link_child(child.clone()).await);
             assert!(!parent.link_child(child.clone()).await);
+        }
+
+        #[tokio::test]
+        async fn test_second_try_link_child_attempt_should_return_false() {
+            let parent = Arc::new(Node::new(0_usize, "parent"));
+            let child = Arc::new(Node::new(1_usize, "child"));
+
+            assert!(parent.try_link_child(child.clone()).unwrap());
+            assert!(!parent.try_link_child(child.clone()).unwrap());
         }
 
         #[tokio::test]
