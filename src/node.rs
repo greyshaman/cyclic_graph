@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, collections::HashSet, hash::Hash, marker::PhantomData, sync::Arc};
 
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
 
 use crate::{
     default_handler::DefaultHandler, error::CyclicGraphError as CGError,
