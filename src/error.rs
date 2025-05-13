@@ -23,15 +23,19 @@ pub enum CyclicGraphError<I> {
     #[error("Node not found by id: {0}")]
     NodeNotFoundById(I),
 
-    /// The error wes caused when trying add node with non-unique id
+    /// The error was caused when trying add node with non-unique id
     #[error("Entered id `{0}` is not unique")]
     NonUniqueId(I),
 
-    /// The error was caused when cannot set write lock on RwLock
-    #[error("Cannot set write lock")]
-    CannotSetWriteLock,
+    /// The error was caused at LinksProvider handler
+    #[error("LinksProvider handler was caused error: {0}")]
+    LinksProviderHandlerError(String),
 
-    /// The error was caused when cannot set read lock on RwLock
-    #[error("Cannot set read lock")]
-    CannotSetReadLock,
+    /// The error was caused at LinksAcceptor handler
+    #[error("LinksAcceptor handler was caused error: {0}")]
+    LinksAcceptorHandlerError(String),
+
+    /// The error was caused when TryLockError raised
+    #[error("TryLockError occurred")]
+    TryLockError(#[from] tokio::sync::TryLockError),
 }
