@@ -22,6 +22,7 @@ pub type NodesMap<I, T> = Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>;
 /// and the output is always an ending point for other nodes.
 /// I - the nodes identifier type
 /// T - the type of nodes payload data
+/// G - identifier generator function
 pub struct CyclicGraph<I, T, G = fn(&AtomicUsize, GeneratorMode) -> I>
 where
     G: Fn(&AtomicUsize, GeneratorMode) -> I,
