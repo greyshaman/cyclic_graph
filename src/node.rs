@@ -1,15 +1,22 @@
-use std::{borrow::Borrow, collections::HashSet, hash::Hash, sync::Arc};
+use std::{borrow::Borrow, collections::HashSet, hash::Hash, marker::PhantomData, sync::Arc};
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 
-use crate::error::CyclicGraphError;
+use crate::{
+    default_handler::DefaultHandler, error::CyclicGraphError as CGError,
+    links_acceptor::LinksAcceptor, links_provider::LinksProvider,
+};
 
 /// A node in a graph with a set of ancestor and descendant nodes, a unique identifier,
 /// and a payload that it is associated with.
 /// I - the node identifier type
 /// T - the type of node payload data
 #[derive(Debug)]
-pub struct Node<I, T> {
+pub struct Node<I, T, S = (), LP = DefaultHandler, LA = DefaultHandler>
+where
+    LP: LinksProvider<S, I>,
+    LA: LinksAcceptor<S, I>,
+{
     /// The unique identifier
     id: I,
 
@@ -21,6 +28,10 @@ pub struct Node<I, T> {
 
     /// The child ids set
     child_ids: RwLock<HashSet<I>>,
+
+    links_provider: LP,
+    links_acceptor: LA,
+    _marker: PhantomData<S>,
 }
 
 impl<I, T> Node<I, T>
@@ -44,6 +55,76 @@ where
             data: Arc::new(RwLock::new(data)),
             parent_ids: RwLock::new(HashSet::new()),
             child_ids: RwLock::new(HashSet::new()),
+            links_provider: DefaultHandler,
+            links_acceptor: DefaultHandler,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<I, T, S, LP, LA> Node<I, T, S, LP, LA>
+where
+    I: Clone + Eq + PartialEq + Hash,
+    LP: LinksProvider<S, I>,
+    LA: LinksAcceptor<S, I>,
+{
+    pub fn with_links_provider<NewLP: LinksProvider<S, I>>(
+        self,
+        provider: NewLP,
+    ) -> Node<I, T, S, NewLP, LA> {
+        Node {
+            id: self.id,
+            data: self.data,
+            parent_ids: self.parent_ids,
+            child_ids: self.child_ids,
+            links_provider: provider,
+            links_acceptor: self.links_acceptor,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_links_acceptor<NewLA: LinksAcceptor<S, I>>(
+        self,
+        acceptor: NewLA,
+    ) -> Node<I, T, S, LP, NewLA> {
+        Node {
+            id: self.id,
+            data: self.data,
+            parent_ids: self.parent_ids,
+            child_ids: self.child_ids,
+            links_provider: self.links_provider,
+            links_acceptor: acceptor,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Creates link to specified child and from child to current node as to parent
+    pub async fn link_child(&self, child: Arc<Node<I, T>>) -> bool {
+        self.child_ids.write().await.insert(child.id().clone())
+            && child.parent_ids.write().await.insert(self.id().clone())
+            && child
+                .links_acceptor
+                .connect(&self.links_provider)
+                .await
+                .is_ok()
+    }
+
+    /// Creates link to specified child and from child to current node as to parent synchronously
+    pub fn try_link_child(&self, child: Arc<Node<I, T>>) -> Result<bool, CGError<I>> {
+        let link_child_id_res = self
+            .child_ids
+            .try_write()
+            .map(|mut src_child_ids| src_child_ids.insert(child.id().clone()))
+            .map_err(|e| CGError::TryLockError(e))?;
+        if link_child_id_res {
+            child
+                .parent_ids
+                .try_write()
+                .map(|mut parent_ids| parent_ids.insert(self.id().clone()))
+                .map_err(|e| CGError::TryLockError(e))
+                .and(child.links_acceptor.try_connect(&self.links_provider))
+        } else {
+            Ok(link_child_id_res)
         }
     }
 
@@ -60,30 +141,6 @@ where
     /// Changes wrapped payload data
     pub async fn set_data(&self, value: T) {
         *self.data.write().await = value
-    }
-
-    /// Creates link to specified child and from child to current node as to parent
-    pub async fn link_child(&self, child: Arc<Node<I, T>>) -> bool {
-        self.child_ids.write().await.insert(child.id().clone())
-            && child.parent_ids.write().await.insert(self.id().clone())
-    }
-
-    /// Creates link to specified child and from child to current node as to parent synchronously
-    pub fn try_link_child(&self, child: Arc<Node<I, T>>) -> Result<bool, CyclicGraphError<I>> {
-        let link_child_id_res = self
-            .child_ids
-            .try_write()
-            .map(|mut src_child_ids| src_child_ids.insert(child.id().clone()))
-            .map_err(|_| CyclicGraphError::CannotSetWriteLock)?;
-        if link_child_id_res {
-            child
-                .parent_ids
-                .try_write()
-                .map(|mut parent_ids| parent_ids.insert(self.id().clone()))
-                .map_err(|_| CyclicGraphError::CannotSetWriteLock)
-        } else {
-            Ok(link_child_id_res)
-        }
     }
 
     /// Removes links between child and current node as parent
@@ -119,21 +176,27 @@ where
     pub async fn link_parent(&self, parent: Arc<Node<I, T>>) -> bool {
         self.parent_ids.write().await.insert(parent.id().clone())
             && parent.child_ids.write().await.insert(self.id().clone())
+            && self
+                .links_acceptor
+                .connect(&parent.links_provider)
+                .await
+                .is_ok()
     }
 
     /// Creates link to specified parent and from parent to current node as to child synchronously
-    pub fn try_link_parent(&self, parent: Arc<Node<I, T>>) -> Result<bool, CyclicGraphError<I>> {
+    pub fn try_link_parent(&self, parent: Arc<Node<I, T>>) -> Result<bool, CGError<I>> {
         let link_parent_id_res = self
             .parent_ids
             .try_write()
             .map(|mut src_parent_ids| src_parent_ids.insert(parent.id().clone()))
-            .map_err(|_| CyclicGraphError::CannotSetWriteLock)?;
+            .map_err(|e| CGError::TryLockError(e))?;
         if link_parent_id_res {
             parent
                 .child_ids
                 .try_write()
                 .map(|mut child_ids| child_ids.insert(self.id().clone()))
-                .map_err(|_| CyclicGraphError::CannotSetWriteLock)
+                .map_err(|e| CGError::TryLockError(e))
+                .and(self.links_acceptor.try_connect(&parent.links_provider))
         } else {
             Ok(link_parent_id_res)
         }
