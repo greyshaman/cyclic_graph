@@ -11,6 +11,10 @@ pub enum CyclicGraphError<I> {
     #[error("Cannot insert node after output node")]
     InsertAfterOutput,
 
+    /// The error was caused when Node try link to itself
+    #[error("Cannot link node to itself")]
+    CannotLinkToItself,
+
     /// The error was caused when trying to remove the Input Node
     #[error("Cannot remove input node")]
     RemoveInput,
