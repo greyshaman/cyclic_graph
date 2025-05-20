@@ -37,6 +37,7 @@ where
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
     /// use async_trait::async_trait;
+    /// use std::any::Any;
     ///
     /// #[derive(Debug)]
     /// struct StringContent {
@@ -53,17 +54,21 @@ where
     ///
     /// #[async_trait]
     /// impl Content<usize, String, ()> for StringContent {
-    ///     async fn data(&self) -> Arc<RwLock<String>> {
+    ///     fn data(&self) -> Arc<RwLock<String>> {
     ///         self.data.clone()
     ///     }
     ///
-    ///     async fn set_data(
+    ///     fn set_data(
     ///         &mut self,
     ///         data: Arc<RwLock<String>>
     ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
     ///         let prev = self.data.clone();
     ///         self.data = data.clone();
     ///         Ok(prev)
+    ///     }
+    ///
+    ///     fn as_any(&self) -> &dyn Any {
+    ///         self
     ///     }
     /// }
     ///
@@ -82,17 +87,21 @@ where
     ///
     /// #[async_trait]
     /// impl Content<String, Vec<usize>, ()> for VecUsizeContent {
-    ///     async fn data(&self) -> Arc<RwLock<Vec<usize>>> {
+    ///     fn data(&self) -> Arc<RwLock<Vec<usize>>> {
     ///         self.data.clone()
     ///     }
     ///
-    ///     async fn set_data(
+    ///     fn set_data(
     ///         &mut self,
     ///         data: Arc<RwLock<Vec<usize>>>,
     ///     ) -> Result<Arc<RwLock<Vec<usize>>>, CGError<String>> {
     ///         let prev = self.data.clone();
     ///         self.data = data.clone();
     ///         Ok(prev)
+    ///     }
+    ///
+    ///     fn as_any(&self) -> &dyn Any {
+    ///         self
     ///     }
     /// }
     ///
@@ -130,12 +139,12 @@ where
 
     /// Returns wrapped payload data
     pub async fn data(&self) -> Arc<RwLock<D>> {
-        self.content.read().await.data().await
+        self.content.read().await.data()
     }
 
     /// Changes wrapped payload data
     pub async fn set_data(&self, value: Arc<RwLock<D>>) -> Result<Arc<RwLock<D>>, CGError<I>> {
-        self.content.write().await.set_data(value).await
+        self.content.write().await.set_data(value)
     }
 
     /// Checks if current node has child node specified by id
@@ -164,6 +173,9 @@ where
 
     /// Creates link to specified child and from child to current node as to parent
     pub async fn link_child(&self, child: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
+        if self.id == child.id {
+            return Err(CGError::CannotLinkToItself);
+        }
         let res = self.child_ids.write().await.insert(child.id().clone())
             && child.parent_ids.write().await.insert(self.id().clone());
         if res {
@@ -180,6 +192,9 @@ where
 
     /// Creates link to specified child and from child to current node as to parent synchronously
     pub fn try_link_child(&self, child: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
+        if self.id == child.id {
+            return Err(CGError::CannotLinkToItself);
+        }
         self.child_ids
             .try_write()
             .map(|mut src_child_ids| src_child_ids.insert(child.id().clone()))
@@ -223,6 +238,9 @@ where
 
     /// Creates link to specified parent and from parent to current node as to child
     pub async fn link_parent(&self, parent: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
+        if self.id == parent.id {
+            return Err(CGError::CannotLinkToItself);
+        }
         let res = self.parent_ids.write().await.insert(parent.id().clone())
             && parent.child_ids.write().await.insert(self.id().clone());
         if res {
@@ -239,6 +257,9 @@ where
 
     /// Creates link to specified parent and from parent to current node as to child synchronously
     pub fn try_link_parent(&self, parent: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
+        if self.id == parent.id {
+            return Err(CGError::CannotLinkToItself);
+        }
         self.parent_ids
             .try_write()
             .map(|mut src_parent_ids| src_parent_ids.insert(parent.id().clone()))
@@ -310,7 +331,7 @@ mod tests {
     use super::*;
 
     mod for_id_as_usize {
-        use std::error::Error;
+        use std::{any::Any, error::Error};
 
         use super::*;
         use async_trait::async_trait;
@@ -330,17 +351,21 @@ mod tests {
 
         #[async_trait]
         impl Content<usize, String, ()> for StringContent {
-            async fn data(&self) -> Arc<RwLock<String>> {
+            fn data(&self) -> Arc<RwLock<String>> {
                 self.data.clone()
             }
 
-            async fn set_data(
+            fn set_data(
                 &mut self,
                 data: Arc<RwLock<String>>,
             ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
                 let ret = self.data.clone();
                 self.data = data.clone();
                 Ok(ret)
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -359,17 +384,21 @@ mod tests {
 
         #[async_trait]
         impl Content<usize, Vec<usize>, ()> for VecUsizeContent {
-            async fn data(&self) -> Arc<RwLock<Vec<usize>>> {
+            fn data(&self) -> Arc<RwLock<Vec<usize>>> {
                 self.data.clone()
             }
 
-            async fn set_data(
+            fn set_data(
                 &mut self,
                 data: Arc<RwLock<Vec<usize>>>,
             ) -> Result<Arc<RwLock<Vec<usize>>>, CGError<usize>> {
                 let prev = self.data.clone();
                 self.data = data.clone();
                 Ok(prev)
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -490,8 +519,8 @@ mod tests {
             Ok(())
         }
 
-        #[tokio::test]
-        async fn test_second_try_link_child_attempt_should_return_false() {
+        #[test]
+        fn test_second_try_link_child_attempt_should_return_false() -> Result<(), Box<dyn Error>> {
             let parent = Arc::new(Node::new(
                 0_usize,
                 Arc::new(RwLock::new(StringContent::new("parent"))),
@@ -501,8 +530,10 @@ mod tests {
                 Arc::new(RwLock::new(StringContent::new("child"))),
             ));
 
-            assert!(parent.try_link_child(child.clone()).unwrap());
-            assert!(!parent.try_link_child(child.clone()).unwrap());
+            assert!(parent.try_link_child(child.clone())?);
+            assert!(!parent.try_link_child(child.clone())?);
+
+            Ok(())
         }
 
         #[tokio::test]
@@ -739,15 +770,34 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_allow_link_self_node_as_child() -> Result<(), Box<dyn Error>> {
+        async fn test_not_allow_link_self_node_as_child() {
             let node = Arc::new(Node::new(
                 0_usize,
                 Arc::new(RwLock::new(StringContent::new("test"))),
             ));
 
-            assert!(node.link_child(node.clone()).await?);
+            assert!(node.link_child(node.clone()).await.is_err());
+        }
 
-            assert!(node.has_child(node.id()).await);
+        #[tokio::test]
+        async fn test_allow_cyclic_links_between_two_nodes() -> Result<(), Box<dyn Error>> {
+            let node0 = Arc::new(Node::new(
+                0_usize,
+                Arc::new(RwLock::new(StringContent::new("test"))),
+            ));
+            let node1 = Arc::new(Node::new(
+                1,
+                Arc::new(RwLock::new(StringContent::new("test"))),
+            ));
+
+            assert!(node0.link_child(node1.clone()).await?);
+            assert!(node1.link_child(node0.clone()).await?);
+
+            assert!(node0.has_child(node1.id()).await);
+            assert!(node1.has_child(node0.id()).await);
+
+            assert!(node0.has_parent(node1.id()).await);
+            assert!(node1.has_parent(node0.id()).await);
 
             Ok(())
         }
@@ -756,7 +806,7 @@ mod tests {
     mod for_id_as_str {
         use super::*;
         use async_trait::async_trait;
-        use std::error::Error;
+        use std::{any::Any, error::Error};
 
         #[derive(Debug)]
         struct StringContent {
@@ -773,17 +823,21 @@ mod tests {
 
         #[async_trait]
         impl Content<&'static str, String, ()> for StringContent {
-            async fn data(&self) -> Arc<RwLock<String>> {
+            fn data(&self) -> Arc<RwLock<String>> {
                 self.data.clone()
             }
 
-            async fn set_data(
+            fn set_data(
                 &mut self,
                 data: Arc<RwLock<String>>,
             ) -> Result<Arc<RwLock<String>>, CGError<&'static str>> {
                 let ret = self.data.clone();
                 self.data = data.clone();
                 Ok(ret)
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -802,17 +856,21 @@ mod tests {
 
         #[async_trait]
         impl Content<&'static str, Vec<usize>, ()> for VecUsizeContent {
-            async fn data(&self) -> Arc<RwLock<Vec<usize>>> {
+            fn data(&self) -> Arc<RwLock<Vec<usize>>> {
                 self.data.clone()
             }
 
-            async fn set_data(
+            fn set_data(
                 &mut self,
                 data: Arc<RwLock<Vec<usize>>>,
             ) -> Result<Arc<RwLock<Vec<usize>>>, CGError<&'static str>> {
                 let prev = self.data.clone();
                 self.data = data.clone();
                 Ok(prev)
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -1150,15 +1208,799 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_allow_link_self_node_as_child() -> Result<(), Box<dyn Error>> {
+        async fn test_not_allow_link_self_node_as_child() {
             let node = Arc::new(Node::new(
                 "n0",
                 Arc::new(RwLock::new(StringContent::new("test"))),
             ));
 
-            assert!(node.link_child(node.clone()).await?);
+            assert!(node.link_child(node.clone()).await.is_err());
+        }
 
-            assert!(node.has_child(node.id()).await);
+        #[tokio::test]
+        async fn test_allow_cyclic_links_between_two_nodes() -> Result<(), Box<dyn Error>> {
+            let node0 = Arc::new(Node::new(
+                "n0",
+                Arc::new(RwLock::new(StringContent::new("test0"))),
+            ));
+            let node1 = Arc::new(Node::new(
+                "n1",
+                Arc::new(RwLock::new(StringContent::new("test1"))),
+            ));
+
+            assert!(node0.link_child(node1.clone()).await?);
+            assert!(node1.link_child(node0.clone()).await?);
+
+            assert!(node0.has_child(node1.id()).await);
+            assert!(node1.has_child(node0.id()).await);
+
+            assert!(node0.has_parent(node1.id()).await);
+            assert!(node1.has_parent(node0.id()).await);
+
+            Ok(())
+        }
+    }
+
+    mod for_struct_with_inner_connected_cells {
+        use super::*;
+
+        use std::{
+            any::Any,
+            collections::{HashMap, hash_map::Entry},
+            error::Error,
+            sync::Arc,
+        };
+
+        use async_trait::async_trait;
+        use tokio::sync::{RwLock, broadcast};
+
+        use crate::{Content, Error as CGError};
+
+        type Cellular = HashMap<usize, InnerCell>;
+
+        const CELLULAR_CAPACITY: usize = 10;
+
+        #[derive(Debug)]
+        struct InnerCell {
+            inputs: HashMap<usize, broadcast::Receiver<u8>>,
+            output: broadcast::Sender<u8>,
+        }
+
+        impl InnerCell {
+            fn new(tx: broadcast::Sender<u8>) -> Self {
+                Self {
+                    inputs: HashMap::new(),
+                    output: tx,
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        struct CellularContent {
+            data: Arc<RwLock<Cellular>>,
+            node_id: usize,
+        }
+
+        impl CellularContent {
+            fn new(size: usize, node_id: usize) -> Self {
+                if size > CELLULAR_CAPACITY {
+                    panic!("The size should be less then {}", CELLULAR_CAPACITY)
+                };
+                let cell_group_id_prefix = node_id * CELLULAR_CAPACITY;
+                let mut cellulars = HashMap::with_capacity(size);
+                for id in 0..size {
+                    let (tx, _) = broadcast::channel::<u8>(2);
+                    cellulars.insert(cell_group_id_prefix + id, InnerCell::new(tx));
+                }
+                Self {
+                    data: Arc::new(RwLock::new(cellulars)),
+                    node_id,
+                }
+            }
+
+            async fn has_incoming_channels(&self) -> bool {
+                self.data
+                    .read()
+                    .await
+                    .values()
+                    .any(|item| item.inputs.len() > 0)
+            }
+
+            async fn count_incoming_channels(&self) -> usize {
+                self.data
+                    .read()
+                    .await
+                    .values()
+                    .fold(0_usize, |acc, item| acc + item.inputs.len())
+            }
+
+            async fn count_outgoing_channels(&self) -> usize {
+                self.data
+                    .read()
+                    .await
+                    .values()
+                    .fold(0_usize, |acc, item| acc + item.output.receiver_count())
+            }
+        }
+
+        #[async_trait]
+        impl Content<usize, Cellular, u8> for CellularContent {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn data(&self) -> Arc<RwLock<Cellular>> {
+                self.data.clone()
+            }
+
+            fn set_data(
+                &mut self,
+                data: Arc<RwLock<Cellular>>,
+            ) -> Result<Arc<RwLock<Cellular>>, CGError<usize>> {
+                let prev = self.data.clone();
+                self.data = data.clone();
+                Ok(prev)
+            }
+
+            async fn provide_receiver(
+                &self,
+                src_idx: usize,
+            ) -> Result<Option<broadcast::Receiver<u8>>, CGError<usize>> {
+                match self.data.write().await.entry(src_idx) {
+                    Entry::Occupied(entry) => Ok(Some(entry.get().output.subscribe())),
+                    Entry::Vacant(_) => Err(CGError::LinksProviderHandlerError(format!(
+                        "Cell with id {} not found at provider content",
+                        src_idx
+                    ))),
+                }
+            }
+
+            fn try_provide_receiver(
+                &self,
+                src_idx: usize,
+            ) -> Result<Option<broadcast::Receiver<u8>>, CGError<usize>> {
+                match self.data.try_write()?.entry(src_idx) {
+                    Entry::Occupied(entry) => Ok(Some(entry.get().output.subscribe())),
+                    Entry::Vacant(_) => Err(CGError::LinksProviderHandlerError(format!(
+                        "Cell with id {} not found at provider content",
+                        src_idx
+                    ))),
+                }
+            }
+
+            async fn provide_src_ids(&self) -> Vec<usize> {
+                self.data
+                    .read()
+                    .await
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<usize>>()
+            }
+
+            fn try_provide_src_ids(&self) -> Result<Vec<usize>, CGError<usize>> {
+                let ids = self
+                    .data
+                    .try_read()?
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<usize>>();
+                Ok(ids)
+            }
+
+            async fn link_accept(
+                &self,
+                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+            ) -> Result<bool, CGError<usize>> {
+                let mut result = true;
+                let src_ids = provider.read().await.provide_src_ids().await;
+                let mut w_dst_data = self.data.write().await;
+                for dst_content in w_dst_data.values_mut() {
+                    for src_idx in &src_ids {
+                        let rx = provider
+                            .read()
+                            .await
+                            .provide_receiver(src_idx.clone())
+                            .await?;
+                        if let Some(rx) = rx {
+                            if let Entry::Vacant(dst_entry) = dst_content.inputs.entry(*src_idx) {
+                                dst_entry.insert(rx);
+                                result &= true;
+                            } else {
+                                result &= false;
+                            }
+                        } else {
+                            result &= false;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+
+            fn try_link_accept(
+                &self,
+                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+            ) -> Result<bool, CGError<usize>> {
+                let mut result = true;
+                let src_ids = provider.try_read()?.try_provide_src_ids()?;
+                for dst_content in self.data.try_write()?.values_mut() {
+                    for src_idx in &src_ids {
+                        let rx = provider.try_read()?.try_provide_receiver(src_idx.clone())?;
+                        if let Some(rx) = rx {
+                            if let Entry::Vacant(dst_entry) = dst_content.inputs.entry(*src_idx) {
+                                dst_entry.insert(rx);
+                                result &= true;
+                            } else {
+                                result &= false;
+                            }
+                        } else {
+                            result &= false;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+
+            async fn link_disconnect(
+                &self,
+                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+            ) -> Result<bool, CGError<usize>> {
+                let mut result = true;
+                let src_ids = provider.read().await.provide_src_ids().await;
+                let mut w_dst_data = self.data.write().await;
+                for dst_content in w_dst_data.values_mut() {
+                    for src_idx in &src_ids {
+                        match dst_content.inputs.entry(*src_idx) {
+                            Entry::Occupied(dst_entry) => {
+                                dst_entry.remove();
+                                result &= true;
+                            }
+                            Entry::Vacant(_) => result &= false,
+                        }
+                    }
+                }
+
+                Ok(result)
+            }
+
+            fn try_link_disconnect(
+                &self,
+                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+            ) -> Result<bool, CGError<usize>> {
+                let mut result = true;
+                let src_ids = provider.try_read()?.try_provide_src_ids()?;
+                for dst_content in self.data.try_write()?.values_mut() {
+                    for src_idx in &src_ids {
+                        match dst_content.inputs.entry(*src_idx) {
+                            Entry::Occupied(dst_entry) => {
+                                dst_entry.remove();
+                                result &= true;
+                            }
+                            Entry::Vacant(_) => result &= false,
+                        }
+                    }
+                }
+
+                Ok(result)
+            }
+        }
+
+        #[tokio::test]
+        async fn test_create_new_node() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node: Node<usize, Cellular, u8> =
+                Node::new(node_id, Arc::new(RwLock::new(content)));
+
+            assert_eq!(node.id, 0);
+
+            let binding = node.data().await;
+            let data = binding.read().await;
+            assert_eq!(data.capacity(), 3);
+
+            assert!(!node.has_parents().await);
+            assert!(!node.has_children().await);
+        }
+
+        #[test]
+        fn test_id_accessor_should_return_correct_id_value() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node = Node::new(node_id, Arc::new(RwLock::new(content)));
+
+            assert_eq!(node.id(), &0);
+        }
+
+        #[tokio::test]
+        async fn test_data_accessor_should_return_correct_data_ref() {
+            let node_id = 0;
+            let content = CellularContent::new(2, node_id);
+            let node: Node<usize, Cellular, u8> =
+                Node::new(node_id, Arc::new(RwLock::new(content)));
+
+            assert_eq!(node.data().await.read().await.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_linking_two_nodes_by_link_child() -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let root_node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child_node: Arc<Node<usize, Cellular, u8>> =
+                Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let res = root_node.link_child(child_node.clone()).await?;
+            assert!(res);
+
+            assert!(!root_node.has_parents().await);
+            assert!(root_node.has_children().await);
+            assert!(child_node.has_parents().await);
+            assert!(!child_node.has_children().await);
+
+            let dyn_root_content = root_node.content.read().await;
+            let concrete_root_content = dyn_root_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_root_content.has_incoming_channels().await);
+            assert_eq!(concrete_root_content.count_incoming_channels().await, 0);
+
+            let dyn_child_content = child_node.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_linking_two_nodes_by_try_link_child() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let root_node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child_node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let op_res = root_node.try_link_child(child_node.clone());
+            assert!(op_res.is_ok());
+            assert!(op_res.unwrap());
+
+            assert!(!root_node.has_parents().await);
+            assert!(root_node.has_children().await);
+            assert!(child_node.has_parents().await);
+            assert!(!child_node.has_children().await);
+
+            let dyn_root_content = root_node.content.read().await;
+            let concrete_root_content = dyn_root_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_root_content.has_incoming_channels().await);
+            assert_eq!(concrete_root_content.count_incoming_channels().await, 0);
+
+            let dyn_child_content = child_node.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+        }
+
+        #[tokio::test]
+        async fn test_second_link_child_attempt_should_return_false() -> Result<(), Box<dyn Error>>
+        {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child.clone()).await?);
+            assert!(!parent.link_child(child.clone()).await?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_second_try_link_child_attempt_should_return_false()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.try_link_child(child.clone())?);
+            assert!(!parent.try_link_child(child.clone())?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_second_link_parent_attempt_should_return_false() -> Result<(), Box<dyn Error>>
+        {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(child.link_parent(parent.clone()).await?);
+            assert!(!child.link_parent(parent.clone()).await?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_unlink_child_should_break_link_between_linked_nodes()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child.clone()).await?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
+
+            assert!(parent.unlink_child(child.clone()).await?);
+
+            assert!(!parent.has_children().await);
+            assert!(!child.has_parents().await);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 0);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_second_unlink_child_should_return_false() -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child.clone()).await?);
+
+            assert!(parent.unlink_child(child.clone()).await?);
+            assert!(!parent.unlink_child(child.clone()).await?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 0);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_unlink_parent_should_break_link_between_linked_nodes()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child.clone()).await?);
+
+            assert!(child.unlink_parent(parent.clone()).await?);
+
+            assert!(!parent.has_children().await);
+            assert!(!child.has_parents().await);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 0);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_second_unlink_parent_should_return_false() -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(child.link_parent(parent.clone()).await?);
+
+            assert!(child.unlink_parent(parent.clone()).await?);
+            assert!(!child.unlink_parent(parent.clone()).await?);
+
+            let dyn_child_content = child.content.read().await;
+            let concrete_child_content = dyn_child_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(!concrete_child_content.has_incoming_channels().await);
+            assert_eq!(concrete_child_content.count_incoming_channels().await, 0);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_child_ids_should_return_children_identifiers_in_vector()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child1 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 2;
+            let content = CellularContent::new(4, node_id);
+            let child2 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child1.clone()).await?);
+            assert!(parent.link_child(child2.clone()).await?);
+
+            let ids = parent.child_ids().await;
+
+            assert!(!ids.is_empty());
+            assert_eq!(ids.len(), 2);
+            assert!(ids.contains(&1));
+            assert!(ids.contains(&2));
+
+            let dyn_parent_content = parent.content.read().await;
+            let concrete_parent_content = dyn_parent_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert_eq!(concrete_parent_content.count_outgoing_channels().await, 18);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_children_ids_should_return_children_identifiers_in_vector()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent1 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let parent2 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 2;
+            let content = CellularContent::new(4, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent1.link_child(child.clone()).await?);
+            assert!(parent2.link_child(child.clone()).await?);
+
+            let ids = child.parent_ids().await;
+
+            assert!(!ids.is_empty());
+            assert_eq!(ids.len(), 2);
+            assert!(ids.contains(&0));
+            assert!(ids.contains(&1));
+
+            let dyn_children_content = child.content.read().await;
+            let concrete_children_content = dyn_children_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert_eq!(
+                concrete_children_content.count_incoming_channels().await,
+                20
+            );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_linking_two_nodes_by_link_parent() -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(child.link_parent(parent.clone()).await?);
+
+            assert!(!parent.has_parents().await);
+            assert!(parent.has_children().await);
+            assert!(child.has_parents().await);
+            assert!(!child.has_children().await);
+
+            let dyn_children_content = child.content.read().await;
+            let concrete_children_content = dyn_children_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert_eq!(concrete_children_content.count_incoming_channels().await, 6);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_has_child_should_return_true_with_correct_child_id()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(parent.link_child(child.clone()).await?);
+
+            assert!(parent.has_child(&1).await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_has_child_should_return_false_with_incorrect_child_id() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(!node.has_child(&1).await);
+        }
+
+        #[tokio::test]
+        async fn test_has_parent_should_return_true_with_correct_parent_id()
+        -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let parent = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let child = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(child.link_parent(parent.clone()).await?);
+
+            assert!(child.has_parent(&0).await);
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_has_parent_should_return_false_with_incorrect_parent_id() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(!node.has_parent(&1).await);
+        }
+
+        #[tokio::test]
+        async fn test_not_allow_link_self_node_as_child() {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(node.link_child(node.clone()).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_allow_cyclic_links_between_two_nodes() -> Result<(), Box<dyn Error>> {
+            let node_id = 0;
+            let content = CellularContent::new(3, node_id);
+            let node0 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            let node_id = 1;
+            let content = CellularContent::new(2, node_id);
+            let node1 = Arc::new(Node::new(node_id, Arc::new(RwLock::new(content))));
+
+            assert!(node0.link_child(node1.clone()).await?);
+            assert!(node1.link_child(node0.clone()).await?);
+
+            assert!(node0.has_child(node1.id()).await);
+            assert!(node1.has_child(node0.id()).await);
+
+            assert!(node0.has_parent(node1.id()).await);
+            assert!(node1.has_parent(node0.id()).await);
+
+            let dyn_node0_content = node0.content.read().await;
+            let concrete_node0_content = dyn_node0_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_node0_content.has_incoming_channels().await);
+            assert_eq!(concrete_node0_content.count_incoming_channels().await, 6);
+
+            let dyn_node1_content = node1.content.read().await;
+            let concrete_node1_content = dyn_node1_content
+                .as_any()
+                .downcast_ref::<CellularContent>()
+                .unwrap();
+
+            assert!(concrete_node1_content.has_incoming_channels().await);
+            assert_eq!(concrete_node1_content.count_incoming_channels().await, 6);
 
             Ok(())
         }
