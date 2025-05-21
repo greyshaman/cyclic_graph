@@ -147,6 +147,43 @@ where
         self.content.write().await.set_data(value)
     }
 
+    pub async fn link_nodes(
+        &self,
+        other: Arc<Node<I, D, S>>,
+        self_ids: &RwLock<HashSet<I>>,
+        other_ids: &RwLock<HashSet<I>>,
+        is_parent_to_child: bool,
+    ) -> Result<bool, CGError<I>> {
+        if self.id == other.id {
+            return Err(CGError::CannotLinkToItself);
+        }
+        let res = self_ids.write().await.insert(other.id().clone())
+            && other_ids.write().await.insert(self.id().clone());
+        dbg!(res);
+        if res {
+            if res {
+                return if is_parent_to_child {
+                    // When self - parent, other - child
+                    other
+                        .content
+                        .read()
+                        .await
+                        .link_accept(self.content.clone())
+                        .await
+                } else {
+                    // When self - child, other - parent
+                    self.content
+                        .read()
+                        .await
+                        .link_accept(other.content.clone())
+                        .await
+                };
+            }
+        }
+
+        Ok(res)
+    }
+
     /// Checks if current node has child node specified by id
     pub async fn has_child<Q>(&self, id: &Q) -> bool
     where
@@ -173,21 +210,8 @@ where
 
     /// Creates link to specified child and from child to current node as to parent
     pub async fn link_child(&self, child: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
-        if self.id == child.id {
-            return Err(CGError::CannotLinkToItself);
-        }
-        let res = self.child_ids.write().await.insert(child.id().clone())
-            && child.parent_ids.write().await.insert(self.id().clone());
-        if res {
-            return child
-                .content
-                .read()
-                .await
-                .link_accept(self.content.clone())
-                .await;
-        }
-
-        Ok(res)
+        self.link_nodes(child.clone(), &self.child_ids, &child.parent_ids, true)
+            .await
     }
 
     /// Creates link to specified child and from child to current node as to parent synchronously
@@ -238,21 +262,8 @@ where
 
     /// Creates link to specified parent and from parent to current node as to child
     pub async fn link_parent(&self, parent: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
-        if self.id == parent.id {
-            return Err(CGError::CannotLinkToItself);
-        }
-        let res = self.parent_ids.write().await.insert(parent.id().clone())
-            && parent.child_ids.write().await.insert(self.id().clone());
-        if res {
-            return self
-                .content
-                .read()
-                .await
-                .link_accept(parent.content.clone())
-                .await;
-        }
-
-        Ok(res)
+        self.link_nodes(parent.clone(), &self.parent_ids, &parent.child_ids, false)
+            .await
     }
 
     /// Creates link to specified parent and from parent to current node as to child synchronously
