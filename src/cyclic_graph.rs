@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     error::Error,
     fmt::{Debug, Display},
     hash::Hash,
@@ -9,7 +9,7 @@ use std::{
 use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
-use crate::{Content, GeneratorMode, IdGenerator, error::CyclicGraphError, node::Node};
+use crate::{Content, Error as CGError, GeneratorMode, IdGenerator, node::Node};
 
 pub type NodesMap<I, T, S> = Arc<RwLock<HashMap<I, Arc<Node<I, T, S>>>>>;
 
@@ -236,7 +236,7 @@ where
         id_generator: G,
     ) -> Result<Self, Box<dyn Error>> {
         if input_id == output_id {
-            return Err(Box::new(CyclicGraphError::NonUniqueId(output_id.clone())));
+            return Err(Box::new(CGError::NonUniqueId(output_id.clone())));
         }
 
         let input = Arc::new(Node::new(input_id, input_content));
@@ -254,7 +254,7 @@ where
         let try_id = id_generator(&recent_id, GeneratorMode::DryRun);
 
         if input.id() == &try_id || output.id() == &try_id {
-            return Err(Box::new(CyclicGraphError::NonUniqueId(try_id.clone())));
+            return Err(Box::new(CGError::NonUniqueId(try_id.clone())));
         }
 
         Ok(Self {
@@ -366,39 +366,73 @@ where
         parent_ids: &[I],
         child_ids: &[I],
     ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
+        // Checking boundary conditions without blocking
         if child_ids.iter().any(|id| id == self.input.id()) {
-            return Err(Box::new(CyclicGraphError::InsertBeforeInput::<I>));
-        } else if parent_ids.iter().any(|id| id == self.output.id()) {
-            return Err(Box::new(CyclicGraphError::InsertAfterOutput::<I>));
+            return Err(Box::new(CGError::InsertBeforeInput::<I>));
         }
 
+        if parent_ids.iter().any(|id| id == self.output.id()) {
+            return Err(Box::new(CGError::InsertAfterOutput::<I>));
+        }
+
+        // Atomic ID generation and node creation
         let id = (self.id_generator)(&self.recent_id, GeneratorMode::Normal);
         let new_node = Arc::new(Node::new(id.clone(), content));
-        self.nodes.write().await.insert(id, new_node.clone());
+
+        // Single lock for insertion
+        {
+            let mut nodes = self.nodes.write().await;
+            match nodes.entry(id.clone()) {
+                Entry::Vacant(entry) => entry.insert(new_node.clone()),
+                Entry::Occupied(_) => return Err(Box::new(CGError::NonUniqueId(id))),
+            };
+        }
+
+        // Parallel processing of links
+        let mut parent_links = Vec::new();
+        let mut child_links = Vec::new();
 
         for parent_id in parent_ids {
-            if let Some(parent) = self.nodes.read().await.get(parent_id) {
+            let nodes = self.nodes.clone();
+            let new_node = new_node.clone();
+            let parent_id = parent_id.clone();
+
+            parent_links.push(tokio::spawn(async move {
+                let nodes_binding = nodes.read().await;
+                let parent = nodes_binding
+                    .get(&parent_id)
+                    .ok_or(CGError::NodeNotFoundById(parent_id))?;
+
                 parent.link_child(new_node.clone()).await?;
-                new_node.link_parent(parent.clone()).await?;
-            } else {
-                return Err(Box::new(CyclicGraphError::NodeNotFoundById(
-                    parent_id.clone(),
-                )));
-            }
+                new_node.link_parent(parent.clone()).await
+            }));
         }
 
         for child_id in child_ids {
-            if let Some(child) = self.nodes.read().await.get(child_id) {
+            let nodes = self.nodes.clone();
+            let new_node = new_node.clone();
+            let child_id = child_id.clone();
+
+            child_links.push(tokio::spawn(async move {
+                let nodes_binding = nodes.read().await;
+                let child = nodes_binding
+                    .get(&child_id)
+                    .ok_or(CGError::NodeNotFoundById(child_id))?;
+
                 child.link_parent(new_node.clone()).await?;
-                new_node.link_child(child.clone()).await?;
-            } else {
-                return Err(Box::new(CyclicGraphError::NodeNotFoundById(
-                    child_id.clone(),
-                )));
-            }
+                new_node.link_child(child.clone()).await
+            }));
         }
 
-        Ok(new_node.clone())
+        // Parallel execution of all binding operations
+        let (parent_results, child_results) = tokio::join!(
+            futures::future::try_join_all(parent_links),
+            futures::future::try_join_all(child_links)
+        );
+
+        parent_results.and(child_results)?;
+
+        Ok(new_node)
     }
 
     /// Inserts node to graph with inset into links between
@@ -510,9 +544,9 @@ where
         child_id: I,
     ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
         if &child_id == self.input.id() {
-            return Err(Box::new(CyclicGraphError::InsertBeforeInput::<I>));
+            return Err(Box::new(CGError::InsertBeforeInput::<I>));
         } else if &parent_id == self.output.id() {
-            return Err(Box::new(CyclicGraphError::InsertAfterOutput::<I>));
+            return Err(Box::new(CGError::InsertAfterOutput::<I>));
         }
 
         let parent = self
@@ -520,18 +554,14 @@ where
             .read()
             .await
             .get(&parent_id)
-            .ok_or(Box::new(CyclicGraphError::NodeNotFoundById(
-                parent_id.clone(),
-            )))?
+            .ok_or(Box::new(CGError::NodeNotFoundById(parent_id.clone())))?
             .clone();
         let child = self
             .nodes
             .read()
             .await
             .get(&child_id)
-            .ok_or(Box::new(CyclicGraphError::NodeNotFoundById(
-                child_id.clone(),
-            )))?
+            .ok_or(Box::new(CGError::NodeNotFoundById(child_id.clone())))?
             .clone();
 
         let id = (self.id_generator)(&self.recent_id, GeneratorMode::Normal);
@@ -632,9 +662,9 @@ where
             Some(node) => {
                 // prevent removing input or output
                 if self.input.id() == id {
-                    return Err(Box::new(CyclicGraphError::RemoveInput::<I>));
+                    return Err(Box::new(CGError::RemoveInput::<I>));
                 } else if self.output.id() == id {
-                    return Err(Box::new(CyclicGraphError::RemoveOutput::<I>));
+                    return Err(Box::new(CGError::RemoveOutput::<I>));
                 }
 
                 // prolongation of braking links
