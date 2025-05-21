@@ -9,9 +9,9 @@ use std::{
 use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
-use crate::{GeneratorMode, IdGenerator, error::CyclicGraphError, node::Node};
+use crate::{Content, GeneratorMode, IdGenerator, error::CyclicGraphError, node::Node};
 
-pub type NodesMap<I, T> = Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>;
+pub type NodesMap<I, T, S> = Arc<RwLock<HashMap<I, Arc<Node<I, T, S>>>>>;
 
 /// A graph with one input node, many intermediate nodes, and one output node.
 /// The graph keeps track of the uniqueness of node identifiers,
@@ -21,20 +21,22 @@ pub type NodesMap<I, T> = Arc<RwLock<HashMap<I, Arc<Node<I, T>>>>>;
 /// The input node is always the starting point for other nodes in the graph,
 /// and the output is always an ending point for other nodes.
 /// I - the nodes identifier type
-/// T - the type of nodes payload data
+/// D - the type of nodes payload data
+/// S - the type of signal translated between inner elements of node content
 /// G - identifier generator function
-pub struct CyclicGraph<I, T, G = fn(&AtomicUsize, GeneratorMode) -> I>
+pub struct CyclicGraph<I, D: 'static, S = (), G = fn(&AtomicUsize, GeneratorMode) -> I>
 where
     G: Fn(&AtomicUsize, GeneratorMode) -> I,
+    S: 'static,
 {
     /// The input node
-    input: Arc<Node<I, T>>,
+    input: Arc<Node<I, D, S>>,
 
     /// The output node
-    output: Arc<Node<I, T>>,
+    output: Arc<Node<I, D, S>>,
 
     /// The map of nodes
-    nodes: NodesMap<I, T>,
+    nodes: NodesMap<I, D, S>,
 
     /// The id generator function
     id_generator: G,
@@ -43,10 +45,11 @@ where
     recent_id: AtomicUsize,
 }
 
-impl<I, T> CyclicGraph<I, T, fn(&AtomicUsize, GeneratorMode) -> I>
+impl<I, D, S> CyclicGraph<I, D, S, fn(&AtomicUsize, GeneratorMode) -> I>
 where
     I: Clone + Eq + Hash + Debug + Display + Send + Sync + 'static,
-    T: Send + Sync,
+    D: Send + Sync + 'static,
+    S: 'static,
     (): IdGenerator<I>,
 {
     /// Creates new graph with default id generator implementation.
@@ -59,9 +62,9 @@ where
     /// middle nodes. Generated id should be differ from input_id and output_id.
     pub fn new_default(
         input_id: I,
-        input_data: T,
+        input_data: Arc<RwLock<dyn Content<I, D, S>>>,
         output_id: I,
-        output_data: T,
+        output_data: Arc<RwLock<dyn Content<I, D, S>>>,
         start_id_idx: usize,
     ) -> Result<Self, Box<dyn Error>> {
         Self::new(
@@ -75,10 +78,11 @@ where
     }
 }
 
-impl<I, T, G> CyclicGraph<I, T, G>
+impl<I, D, S, G> CyclicGraph<I, D, S, G>
 where
     I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
-    T: Send + Sync,
+    D: Send + Sync + 'static,
+    S: 'static,
     G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
 {
     /// Creates new graph with input and output nodes.
@@ -95,17 +99,51 @@ where
     /// # Example for graph with usize id nodes:
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
     /// use std::sync::atomic::Ordering;
     /// use std::error::Error;
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<usize, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let graph = CyclicGraph::new(
     ///         0_usize, // input_id
-    ///         "input_data", // payload data for input node
+    ///         Arc::new(RwLock::new(StringContent::new("input"))), // payload data for input node
     ///         1, // output_id
-    ///         "output_data", // payload data for output node
+    ///         Arc::new(RwLock::new(StringContent::new("output"))), // payload data for output node
     ///         2, // start_id_idx - from this number generator will be generate id for new nodes
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => {
@@ -123,16 +161,50 @@ where
     /// # Example for graph with String id node:
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
     /// use std::{sync::atomic::Ordering, error::Error};
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<String, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<String>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let graph = CyclicGraph::new(
     ///         String::from("IL"), // input_id
-    ///         "input", // input_data
+    ///         Arc::new(RwLock::new(StringContent::new("input"))), // input_data
     ///         String::from("OL"), // output_id
-    ///         "output", // output_data
+    ///         Arc::new(RwLock::new(StringContent::new("output"))), // output_data
     ///         0, // start_id_idx
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => {
@@ -157,9 +229,9 @@ where
     /// ```
     pub fn new(
         input_id: I,
-        input_data: T,
+        input_content: Arc<RwLock<dyn Content<I, D, S>>>,
         output_id: I,
-        output_data: T,
+        output_content: Arc<RwLock<dyn Content<I, D, S>>>,
         start_id_idx: usize,
         id_generator: G,
     ) -> Result<Self, Box<dyn Error>> {
@@ -167,8 +239,8 @@ where
             return Err(Box::new(CyclicGraphError::NonUniqueId(output_id.clone())));
         }
 
-        let input = Arc::new(Node::new(input_id, input_data));
-        let output = Arc::new(Node::new(output_id, output_data));
+        let input = Arc::new(Node::new(input_id, input_content));
+        let output = Arc::new(Node::new(output_id, output_content));
 
         let mut nodes = HashMap::new();
         nodes.insert(input.id().clone(), input.clone());
@@ -231,16 +303,50 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
     /// use std::{sync::atomic::Ordering, error::Error};
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<usize, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let mut graph = CyclicGraph::new(
     ///         0,
-    ///         "start",
+    ///         Arc::new(RwLock::new(StringContent::new("start"))),
     ///         1,
-    ///         "end",
+    ///         Arc::new(RwLock::new(StringContent::new("end"))),
     ///         2,
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
@@ -248,7 +354,7 @@ where
     ///         },
     ///     )?;
     ///
-    ///     let n = graph.append_node("hidden", &[0], &[1]).await?;
+    ///     let n = graph.append_node(Arc::new(RwLock::new(StringContent::new("hidden"))), &[0], &[1]).await?;
     ///
     ///     assert_eq!(graph.len().await, 3);
     ///     Ok(())
@@ -256,10 +362,10 @@ where
     /// ```
     pub async fn append_node(
         &mut self,
-        data: T,
+        content: Arc<RwLock<dyn Content<I, D, S> + 'static>>,
         parent_ids: &[I],
         child_ids: &[I],
-    ) -> Result<Arc<Node<I, T>>, Box<dyn Error>> {
+    ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
         if child_ids.iter().any(|id| id == self.input.id()) {
             return Err(Box::new(CyclicGraphError::InsertBeforeInput::<I>));
         } else if parent_ids.iter().any(|id| id == self.output.id()) {
@@ -267,13 +373,13 @@ where
         }
 
         let id = (self.id_generator)(&self.recent_id, GeneratorMode::Normal);
-        let new_node = Arc::new(Node::new(id.clone(), data));
+        let new_node = Arc::new(Node::new(id.clone(), content));
         self.nodes.write().await.insert(id, new_node.clone());
 
         for parent_id in parent_ids {
             if let Some(parent) = self.nodes.read().await.get(parent_id) {
-                parent.link_child(new_node.clone()).await;
-                new_node.link_parent(parent.clone()).await;
+                parent.link_child(new_node.clone()).await?;
+                new_node.link_parent(parent.clone()).await?;
             } else {
                 return Err(Box::new(CyclicGraphError::NodeNotFoundById(
                     parent_id.clone(),
@@ -283,8 +389,8 @@ where
 
         for child_id in child_ids {
             if let Some(child) = self.nodes.read().await.get(child_id) {
-                child.link_parent(new_node.clone()).await;
-                new_node.link_child(child.clone()).await;
+                child.link_parent(new_node.clone()).await?;
+                new_node.link_child(child.clone()).await?;
             } else {
                 return Err(Box::new(CyclicGraphError::NodeNotFoundById(
                     child_id.clone(),
@@ -336,16 +442,50 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
     /// use std::{sync::atomic::Ordering, error::Error};
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<usize, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let mut graph = CyclicGraph::new(
     ///         0,
-    ///         "start",
+    ///         Arc::new(RwLock::new(StringContent::new("start"))),
     ///         1,
-    ///         "end",
+    ///         Arc::new(RwLock::new(StringContent::new("end"))),
     ///         2,
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
@@ -353,7 +493,11 @@ where
     ///         },
     ///     )?;
     ///
-    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///     let n = graph.insert_between(
+    ///         Arc::new(RwLock::new(StringContent::new("hidden"))),
+    ///         0,
+    ///         1
+    ///     ).await?;
     ///
     ///     assert_eq!(graph.len().await, 3);
     ///     Ok(())
@@ -361,10 +505,10 @@ where
     /// ```
     pub async fn insert_between(
         &mut self,
-        data: T,
+        data: Arc<RwLock<dyn Content<I, D, S> + 'static>>,
         parent_id: I,
         child_id: I,
-    ) -> Result<Arc<Node<I, T>>, Box<dyn Error>> {
+    ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
         if &child_id == self.input.id() {
             return Err(Box::new(CyclicGraphError::InsertBeforeInput::<I>));
         } else if &parent_id == self.output.id() {
@@ -395,11 +539,11 @@ where
         self.nodes.write().await.insert(id, new_node.clone());
 
         if parent.has_child(&child_id).await {
-            parent.unlink_child(child.clone()).await;
+            parent.unlink_child(child.clone()).await?;
         }
 
-        parent.link_child(new_node.clone()).await;
-        child.link_parent(new_node.clone()).await;
+        parent.link_child(new_node.clone()).await?;
+        child.link_parent(new_node.clone()).await?;
 
         Ok(new_node.clone())
     }
@@ -413,16 +557,51 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
-    /// use std::{sync::atomic::Ordering, error::Error};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
+    /// use std::sync::atomic::Ordering;
+    /// use std::error::Error;
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<usize, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let mut graph = CyclicGraph::new(
     ///         0,
-    ///         "start",
+    ///         Arc::new(RwLock::new(StringContent::new("start"))),
     ///         1,
-    ///         "end",
+    ///         Arc::new(RwLock::new(StringContent::new("end"))),
     ///         2,
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
@@ -430,7 +609,11 @@ where
     ///         },
     ///     )?;
     ///
-    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///     let n = graph.insert_between(
+    ///         Arc::new(RwLock::new(StringContent::new("hidden"))),
+    ///         0,
+    ///         1
+    ///     ).await?;
     ///
     ///     assert_eq!(graph.len().await, 3);
     ///
@@ -477,11 +660,11 @@ where
                     for child in &children {
                         let child = child.clone();
                         if !parent.has_child(child.id()).await {
-                            parent.link_child(child.clone()).await;
+                            parent.link_child(child.clone()).await?;
                         }
-                        node.unlink_child(child.clone()).await;
+                        node.unlink_child(child.clone()).await?;
                     }
-                    node.unlink_parent(parent.clone()).await;
+                    node.unlink_parent(parent.clone()).await?;
                 }
 
                 // remove node
@@ -497,16 +680,51 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode};
-    /// use std::{sync::atomic::Ordering, error::Error};
+    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
+    /// use std::sync::atomic::Ordering;
+    /// use std::error::Error;
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    ///
+    /// #[derive(Debug)]
+    /// struct StringContent {
+    ///     data: Arc<RwLock<String>>,
+    /// }
+    ///
+    /// impl StringContent {
+    ///     pub fn new(data: &str) -> Self {
+    ///         Self {
+    ///             data: Arc::new(RwLock::new(String::from(data))),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Content<usize, String, ()> for StringContent {
+    ///     fn as_any(&self) -> &dyn std::any::Any {
+    ///         self
+    ///     }
+    ///
+    ///     fn data(&self) -> Arc<RwLock<String>> {
+    ///         self.data.clone()
+    ///     }
+    ///
+    ///     fn set_data(
+    ///         &mut self,
+    ///         content: Arc<RwLock<String>>,
+    ///     ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+    ///         let prev = self.data.clone();
+    ///         self.data = content.clone();
+    ///         Ok(prev)
+    ///     }
+    /// }
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
     ///     let mut graph = CyclicGraph::new(
     ///         0,
-    ///         "start",
+    ///         Arc::new(RwLock::new(StringContent::new("start"))),
     ///         1,
-    ///         "end",
+    ///         Arc::new(RwLock::new(StringContent::new("end"))),
     ///         2,
     ///         |recent_id, mode| match mode {
     ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
@@ -514,7 +732,11 @@ where
     ///         },
     ///     )?;
     ///
-    ///     let n = graph.insert_between("hidden", 0, 1).await?;
+    ///     let n = graph.insert_between(
+    ///         Arc::new(RwLock::new(StringContent::new("hidden"))),
+    ///         0,
+    ///         1
+    ///     ).await?;
     ///
     ///     assert_eq!(graph.get(&0).await.unwrap().id(), &0);
     ///     assert_eq!(graph.get(&2).await.unwrap().id(), &2);
@@ -522,7 +744,7 @@ where
     ///     Ok(())
     /// }
     /// ```
-    pub async fn get(&self, id: &I) -> Option<Arc<Node<I, T>>> {
+    pub async fn get(&self, id: &I) -> Option<Arc<Node<I, D, S>>> {
         self.nodes.read().await.get(id).cloned()
     }
 
@@ -545,7 +767,7 @@ where
     #[async_recursion]
     async fn dfs(
         &self,
-        node: Arc<Node<I, T>>,
+        node: Arc<Node<I, D, S>>,
         visited: Arc<RwLock<HashSet<I>>>,
         result: Arc<RwLock<Vec<I>>>,
     ) {
@@ -562,9 +784,9 @@ where
         }
     }
 
-    pub async fn bfs(&self, from_node: Arc<Node<I, T>>, goal_node: Arc<Node<I, T>>) -> bool {
+    pub async fn bfs(&self, from_node: Arc<Node<I, D, S>>, goal_node: Arc<Node<I, D, S>>) -> bool {
         let mut visited = HashSet::<I>::new();
-        let mut queue = Vec::<Arc<Node<I, T>>>::new();
+        let mut queue = Vec::<Arc<Node<I, D, S>>>::new();
 
         queue.push(from_node.clone());
         while let Some(node) = queue.pop() {
@@ -592,11 +814,48 @@ mod tests {
 
     mod for_id_as_usize {
 
+        use crate::Error as CGError;
+
         use super::*;
 
+        #[derive(Debug)]
+        struct StringContent {
+            data: Arc<RwLock<String>>,
+        }
+
+        impl StringContent {
+            pub fn new(data: &str) -> Self {
+                Self {
+                    data: Arc::new(RwLock::new(String::from(data))),
+                }
+            }
+        }
+
+        // #[async_trait]
+        impl Content<usize, String, ()> for StringContent {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn data(&self) -> Arc<RwLock<String>> {
+                self.data.clone()
+            }
+
+            fn set_data(
+                &mut self,
+                content: Arc<RwLock<String>>,
+            ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
+                let prev = self.data.clone();
+                self.data = content.clone();
+                Ok(prev)
+            }
+        }
+
         #[tokio::test]
-        async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+        async fn test_new_default_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             assert_eq!(graph.input.id(), &0);
             assert_eq!(graph.output.id(), &1);
@@ -609,32 +868,42 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
-            let result =
-                CyclicGraph::<usize, &str>::new_default(0, "input_data", 0, "output_data", 2);
+        async fn test_new_default_should_return_error_when_terminal_nodes_has_same_ids() {
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let result = CyclicGraph::new_default(0, input_content, 0, output_content, 2);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
-        async fn test_new_should_return_error_when_start_id_idx_same_of_input_node() {
-            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 0);
+        async fn test_new_default_should_return_error_when_start_id_idx_same_of_input_node() {
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let result = CyclicGraph::new_default(0, input_content, 1, output_content, 0);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
-        async fn test_new_should_return_error_when_start_id_idx_same_of_output_node() {
-            let result = CyclicGraph::new_default(0, "input_data", 1, "output_data", 1);
+        async fn test_new_default_should_return_error_when_start_id_idx_same_of_output_node() {
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let result = CyclicGraph::new_default(0, input_content, 1, output_content, 1);
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2)?;
-            let n2 = graph.append_node("hidden2", &[0], &[1]).await?;
-            let n3 = graph.append_node("hidden3", &[0], &[1]).await?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+
+            let hidden2_content = Arc::new(RwLock::new(StringContent::new("hidden2")));
+            let hidden3_content = Arc::new(RwLock::new(StringContent::new("hidden3")));
+            let n2 = graph.append_node(hidden2_content, &[0], &[1]).await?;
+            let n3 = graph.append_node(hidden3_content, &[0], &[1]).await?;
 
             assert_eq!(graph.len().await, 4);
             assert_eq!(n2.id(), &2);
@@ -657,16 +926,26 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).unwrap();
-            let result = graph.append_node("hidden", &[0], &[0]).await;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph =
+                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+
+            let hidden_content = Arc::new(RwLock::new(StringContent::new("hidden")));
+            let result = graph.append_node(hidden_content, &[0], &[0]).await;
 
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let mut graph = CyclicGraph::new_default(0, "input", 1, "output", 2).unwrap();
-            let result = graph.append_node("hidden", &[1], &[1]).await;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph =
+                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+
+            let hidden_content = Arc::new(RwLock::new(StringContent::new("hidden")));
+            let result = graph.append_node(hidden_content, &[1], &[1]).await;
 
             assert!(result.is_err());
         }
@@ -674,13 +953,18 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2).unwrap();
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph =
+                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
 
-            let result = graph.insert_between("middle", 0, 1).await;
+            let hidden_content = Arc::new(RwLock::new(StringContent::new("middle")));
+            let result = graph.insert_between(hidden_content, 0, 1).await;
             assert!(result.is_ok());
             let n2 = result.unwrap();
 
-            let n3 = graph.insert_between("middle", 2, 1).await?;
+            let hidden_content2 = Arc::new(RwLock::new(StringContent::new("middle2")));
+            let n3 = graph.insert_between(hidden_content2, 2, 1).await?;
 
             // input -> n2 -> n3 -> output
             assert_eq!(graph.len().await, 4);
@@ -707,13 +991,17 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
-            let result = graph.insert_between("middle2", 0, 1).await;
+            let hidden_content2 = Arc::new(RwLock::new(StringContent::new("middle2")));
+            let result = graph.insert_between(hidden_content2, 0, 1).await;
             assert!(result.is_ok());
             let n2 = result.unwrap();
 
-            let n3 = graph.insert_between("middle3", 0, 1).await?;
+            let hidden_content3 = Arc::new(RwLock::new(StringContent::new("middle3")));
+            let n3 = graph.insert_between(hidden_content3, 0, 1).await?;
 
             // input -> [n2, n3] -> output
             assert_eq!(graph.len().await, 4);
@@ -741,11 +1029,17 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_serial_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
-            let n2 = graph.insert_between("middle2", 0, 1).await?;
+            let hidden_content = Arc::new(RwLock::new(StringContent::new("middle2")));
+            let n2 = graph.insert_between(hidden_content, 0, 1).await?;
 
-            let _n3 = graph.insert_between("middle3", n2.id().clone(), 1).await?;
+            let hidden_content3 = Arc::new(RwLock::new(StringContent::new("middle3")));
+            let _n3 = graph
+                .insert_between(hidden_content3, n2.id().clone(), 1)
+                .await?;
 
             // input -> n2 -> n3 -> output
             assert_eq!(graph.len().await, 4);
@@ -763,11 +1057,15 @@ mod tests {
         #[tokio::test]
         async fn test_traverse_from_input_should_return_correct_path_parallel_graph()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
-            let _n2 = graph.insert_between("middle2", 0, 1).await?;
+            let hidden_content2 = Arc::new(RwLock::new(StringContent::new("middle2")));
+            let _n2 = graph.insert_between(hidden_content2, 0, 1).await?;
 
-            let _n3 = graph.insert_between("middle3", 0, 1).await?;
+            let hidden_content3 = Arc::new(RwLock::new(StringContent::new("middle3")));
+            let _n3 = graph.insert_between(hidden_content3, 0, 1).await?;
 
             // input -> [n2, n3] -> output
             assert_eq!(graph.len().await, 4);
@@ -782,7 +1080,9 @@ mod tests {
         #[tokio::test]
         async fn test_remove_should_delete_specified_node_and_prolongate_links()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             // Graph state before removing n4 node
             //               input
@@ -814,15 +1114,43 @@ mod tests {
             //               \  |  /
             //               output
 
-            let n2 = graph.insert_between("middle2", 0, 1).await?;
-            let n3 = graph.insert_between("middle3", 0, 1).await?;
-            let n4 = graph.insert_between("middle4", n2.id().clone(), 1).await?;
-            n4.link_parent(n3.clone()).await;
-            let n5 = graph.insert_between("middle5", n2.id().clone(), 1).await?;
-            n5.link_parent(n4.clone()).await;
-            let n6 = graph.insert_between("middle6", n3.id().clone(), 1).await?;
-            n6.link_parent(n4.clone()).await;
-            let n7 = graph.insert_between("middle7", n4.id().clone(), 1).await?;
+            let n2 = graph
+                .insert_between(Arc::new(RwLock::new(StringContent::new("middle2"))), 0, 1)
+                .await?;
+            let n3 = graph
+                .insert_between(Arc::new(RwLock::new(StringContent::new("middle3"))), 0, 1)
+                .await?;
+            let n4 = graph
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle4"))),
+                    n2.id().clone(),
+                    1,
+                )
+                .await?;
+            n4.link_parent(n3.clone()).await?;
+            let n5 = graph
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle5"))),
+                    n2.id().clone(),
+                    1,
+                )
+                .await?;
+            n5.link_parent(n4.clone()).await?;
+            let n6 = graph
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle6"))),
+                    n3.id().clone(),
+                    1,
+                )
+                .await?;
+            n6.link_parent(n4.clone()).await?;
+            let n7 = graph
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle7"))),
+                    n4.id().clone(),
+                    1,
+                )
+                .await?;
 
             assert_eq!(graph.input.child_ids().await.len(), 2);
             assert!(graph.input.has_child(&2).await);
@@ -929,9 +1257,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(0, "input_data", 1, "output_data", 2)?;
+            let input_content = Arc::new(RwLock::new(StringContent::new("input_data")));
+            let output_content = Arc::new(RwLock::new(StringContent::new("output_data")));
+            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
-            let _n2 = graph.insert_between("middle2", 0, 1).await?;
+            let _n2 = graph
+                .insert_between(Arc::new(RwLock::new(StringContent::new("middle2"))), 0, 1)
+                .await?;
 
             // input -> n2 -> output
             assert_eq!(graph.len().await, 3);
@@ -939,7 +1271,7 @@ mod tests {
             let node_opt = graph.get(&2).await;
             assert!(node_opt.is_some());
             let node = node_opt.unwrap();
-            assert!(node.data().read().await.contains("middle2"));
+            assert!(node.data().await.read().await.contains("middle2"));
             assert_eq!(node.id(), &2);
 
             // try get non-existing node
@@ -952,14 +1284,47 @@ mod tests {
 
     mod for_id_as_string {
         use super::*;
+        use crate::Error as CGError;
+
+        #[derive(Debug)]
+        struct StringContent {
+            data: Arc<RwLock<String>>,
+        }
+
+        impl StringContent {
+            pub fn new(data: &str) -> Self {
+                Self {
+                    data: Arc::new(RwLock::new(String::from(data))),
+                }
+            }
+        }
+
+        impl Content<String, String, ()> for StringContent {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn data(&self) -> Arc<RwLock<String>> {
+                self.data.clone()
+            }
+
+            fn set_data(
+                &mut self,
+                content: Arc<RwLock<String>>,
+            ) -> Result<Arc<RwLock<String>>, CGError<String>> {
+                let prev = self.data.clone();
+                self.data = content.clone();
+                Ok(prev)
+            }
+        }
 
         #[tokio::test]
-        async fn test_new_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
+        async fn test_new_default_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
             let graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input_data"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output_data"))),
                 0,
             )?;
 
@@ -976,13 +1341,13 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_new_should_return_error_when_terminal_nodes_has_same_ids() {
+        async fn test_new_default_should_return_error_when_terminal_nodes_has_same_ids() {
             let result = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input_data"))),
                 String::from("IL"),
-                "output_data",
-                1,
+                Arc::new(RwLock::new(StringContent::new("output_data"))),
+                0,
             );
 
             assert!(result.is_err());
@@ -993,19 +1358,23 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input_data"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output_data"))),
                 0,
             )?;
 
             let new_node = graph
-                .append_node("hidden", &["IL".to_string()], &["OL".to_string()])
+                .append_node(
+                    Arc::new(RwLock::new(StringContent::new("hidden1"))),
+                    &["IL".to_string()],
+                    &["OL".to_string()],
+                )
                 .await?;
 
             let new_node2 = graph
                 .append_node(
-                    "hidden2",
+                    Arc::new(RwLock::new(StringContent::new("hidden2"))),
                     &["IL".to_string(), new_node.id().into()],
                     &["OL".to_string()],
                 )
@@ -1036,14 +1405,18 @@ mod tests {
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )
             .unwrap();
             let result = graph
-                .append_node("hidden", &[String::from("IL")], &[String::from("IL")])
+                .append_node(
+                    Arc::new(RwLock::new(StringContent::new("hidden"))),
+                    &[String::from("IL")],
+                    &[String::from("IL")],
+                )
                 .await;
 
             assert!(result.is_err());
@@ -1053,14 +1426,18 @@ mod tests {
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )
             .unwrap();
             let result = graph
-                .append_node("hidden", &[String::from("OL")], &[String::from("OL")])
+                .append_node(
+                    Arc::new(RwLock::new(StringContent::new("hidden"))),
+                    &[String::from("OL")],
+                    &[String::from("OL")],
+                )
                 .await;
 
             assert!(result.is_err());
@@ -1071,21 +1448,29 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )
             .unwrap();
 
             let result = graph
-                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle0"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await;
             assert!(result.is_ok());
             let n0 = result.unwrap();
 
             let n1 = graph
-                .insert_between("middle", n0.id().into(), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle1"))),
+                    n0.id().into(),
+                    String::from("OL"),
+                )
                 .await?;
 
             // input -> n0 -> n1 -> output
@@ -1114,21 +1499,29 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )
             .unwrap();
 
             let result = graph
-                .insert_between("middle0", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle0"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await;
             assert!(result.is_ok());
             let n0 = result.unwrap();
 
             let n1 = graph
-                .insert_between("middle1", graph.input.id().into(), graph.output.id().into())
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle1"))),
+                    graph.input.id().into(),
+                    graph.output.id().into(),
+                )
                 .await?;
 
             // input -> [n0, n1] -> output
@@ -1156,18 +1549,26 @@ mod tests {
         async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )?;
 
             let n0 = graph
-                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await?;
 
             let n1 = graph
-                .insert_between("middle", n0.id().into(), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    n0.id().into(),
+                    String::from("OL"),
+                )
                 .await?;
 
             // input -> n0 -> n1 -> output
@@ -1187,18 +1588,26 @@ mod tests {
         async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )?;
 
             let _n0 = graph
-                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await?;
 
             let _n1 = graph
-                .insert_between("middle", graph.input.id().into(), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    graph.input.id().into(),
+                    String::from("OL"),
+                )
                 .await?;
 
             // input -> [n0, n1] -> output
@@ -1215,24 +1624,36 @@ mod tests {
         async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
             let mut graph = CyclicGraph::new_default(
                 String::from("IL"),
-                "input_data",
+                Arc::new(RwLock::new(StringContent::new("input"))),
                 String::from("OL"),
-                "output_data",
+                Arc::new(RwLock::new(StringContent::new("output"))),
                 0,
             )?;
 
             // input -> [n0, n1 -> n2] -> output
 
             let n0 = graph
-                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await?;
 
             let n1 = graph
-                .insert_between("middle", String::from("IL"), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    String::from("IL"),
+                    String::from("OL"),
+                )
                 .await?;
 
             let n2 = graph
-                .insert_between("middle", n1.id().into(), String::from("OL"))
+                .insert_between(
+                    Arc::new(RwLock::new(StringContent::new("middle"))),
+                    n1.id().into(),
+                    String::from("OL"),
+                )
                 .await?;
 
             assert_eq!(graph.len().await, 5);
