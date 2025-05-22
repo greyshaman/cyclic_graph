@@ -654,54 +654,99 @@ where
     /// }
     /// ```
     pub async fn remove(&mut self, id: &I) -> Result<bool, Box<dyn Error>> {
-        let r_nodes = self.nodes.read().await;
-        let node = r_nodes.get(id).cloned();
-        drop(r_nodes);
-
-        match node {
-            Some(node) => {
-                // prevent removing input or output
-                if self.input.id() == id {
-                    return Err(Box::new(CGError::RemoveInput::<I>));
-                } else if self.output.id() == id {
-                    return Err(Box::new(CGError::RemoveOutput::<I>));
-                }
-
-                // prolongation of braking links
-                // collect parents
-                let mut parents = Vec::new();
-                for node_id in node.parent_ids().await.iter() {
-                    if let Some(node) = self.nodes.read().await.get(node_id) {
-                        parents.push(node.clone());
-                    }
-                }
-
-                // collect children
-                let mut children = Vec::new();
-                for node_id in node.child_ids().await.iter() {
-                    if let Some(node) = self.nodes.read().await.get(node_id) {
-                        children.push(node.clone());
-                    }
-                }
-
-                // if parents and children are not had links then create links
-                // and unlink removing node from parents and children
-                for parent in parents {
-                    for child in &children {
-                        let child = child.clone();
-                        if !parent.has_child(child.id()).await {
-                            parent.link_child(child.clone()).await?;
-                        }
-                        node.unlink_child(child.clone()).await?;
-                    }
-                    node.unlink_parent(parent.clone()).await?;
-                }
-
-                // remove node
-                Ok(self.nodes.write().await.remove(node.id()).is_some())
-            }
-            None => Ok(false),
+        // Quick checks without blocking
+        if self.input.id() == id {
+            return Err(Box::new(CGError::RemoveInput::<I>));
         }
+
+        if self.output.id() == id {
+            return Err(Box::new(CGError::RemoveOutput::<I>));
+        }
+
+        // Atomic node extraction
+        let node = {
+            let mut nodes = self.nodes.write().await;
+            match nodes.remove(id) {
+                Some(node) => node,
+                None => return Ok(false),
+            }
+        };
+
+        // Parallel collection of links
+        let (parent_ids, child_ids) = tokio::join!(node.parent_ids(), node.child_ids());
+
+        // Prepare data for parallel operation
+        let nodes = self.nodes.clone();
+        let node_ref = node.clone();
+
+        // Concurrent breaking links
+        let break_parent_links = async {
+            let mut results = Vec::new();
+            for parent_id in &parent_ids {
+                let parent = match nodes.read().await.get(parent_id) {
+                    Some(p) => p.clone(),
+                    None => continue,
+                };
+                results.push(parent.unlink_child(node_ref.clone()).await);
+            }
+            results
+        };
+
+        let break_child_links = async {
+            let mut results = Vec::new();
+            for child_id in &child_ids {
+                let child = match nodes.read().await.get(child_id) {
+                    Some(c) => c.clone(),
+                    None => continue,
+                };
+                results.push(child.unlink_parent(node_ref.clone()).await);
+            }
+            results
+        };
+
+        // parallel execution
+        let (parent_results, child_results) = tokio::join!(break_parent_links, break_child_links);
+
+        // restore links between remaining nodes
+        self.reconnect_nodes(&parent_ids, &child_ids).await?;
+
+        // check results
+        let all_ok = parent_results
+            .into_iter()
+            .chain(child_results)
+            .all(|r| r.unwrap_or(false));
+        Ok(all_ok)
+
+    }
+
+    async fn reconnect_nodes(
+        &self,
+        parent_ids: &[I],
+        child_ids: &[I],
+    ) -> Result<(), Box<dyn Error>> {
+        let nodes = self.nodes.read().await;
+
+        let parents = parent_ids
+            .iter()
+            .filter_map(|id| nodes.get(id))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let children = child_ids
+            .iter()
+            .filter_map(|id| nodes.get(id))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for parent in &parents {
+            for child in &children {
+                if !parent.has_child(child.id()).await {
+                    parent.link_child(child.clone()).await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the option of wrapped node reference from graph
