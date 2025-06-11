@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashSet, hash::Hash, sync::Arc};
+use std::{borrow::Borrow, collections::HashSet, hash::Hash, marker::PhantomData, sync::Arc};
 
 use tokio::sync::RwLock;
 
@@ -15,18 +15,22 @@ pub struct Node<I, D, S = ()> {
     id: I,
 
     /// The payload
-    content: Arc<RwLock<dyn Content<I, D, S>>>,
+    content: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
 
     /// The parent ids set
     parent_ids: RwLock<HashSet<I>>,
 
     /// The child ids set
     child_ids: RwLock<HashSet<I>>,
+
+    _marker: PhantomData<D>,
 }
 
-impl<I, D: 'static, S: 'static> Node<I, D, S>
+impl<I, D, S> Node<I, D, S>
 where
-    I: Clone + Eq + PartialEq + Hash + 'static,
+    I: 'static + Send + Sync + Clone + Eq + PartialEq + Hash,
+    D: 'static + Send + Sync,
+    S: 'static + Send + Sync,
 {
     /// The node constructor
     ///
@@ -49,7 +53,7 @@ where
     ///         Self {
     ///             data: Arc::new(RwLock::new(String::from(data))),
     ///         }
-    ///     }
+    ///     }DataTy
     /// }
     ///
     /// #[async_trait]
@@ -123,12 +127,16 @@ where
     /// }
     ///
     /// ```
-    pub fn new(id: I, content: Arc<RwLock<dyn Content<I, D, S>>>) -> Self {
+    pub fn new(
+        id: I,
+        content: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
+    ) -> Self {
         Self {
             id,
             content,
             parent_ids: RwLock::new(HashSet::new()),
             child_ids: RwLock::new(HashSet::new()),
+            _marker: PhantomData,
         }
     }
 
@@ -137,14 +145,30 @@ where
         &self.id
     }
 
-    /// Returns wrapped payload data
-    pub async fn data(&self) -> Arc<RwLock<D>> {
-        self.content.read().await.data()
+    pub async fn content(
+        &self,
+    ) -> Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>> {
+        self.content.clone()
     }
 
-    /// Changes wrapped payload data
-    pub async fn set_data(&self, value: Arc<RwLock<D>>) -> Result<Arc<RwLock<D>>, CGError<I>> {
-        self.content.write().await.set_data(value)
+    /// Returns wrapped payload data
+    pub async fn data_value(&self) -> Option<D> {
+        self.content.read().await.data_value().await
+    }
+
+    /// Sets the new data value for the content.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_data` - The new data value to be set.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Some(old_data))` if the data value was successfully set, where `old_data` is the previous data value.
+    /// Returns `Ok(None)` if the data value was not set because it was already set.
+    /// Returns `Err(error)` if an error occurred while setting the data value.
+    pub async fn set_data_value(&self, new_data: D) -> Result<Option<D>, CGError<I>> {
+        self.content.write().await.set_data_value(new_data).await
     }
 
     pub async fn link_nodes(
@@ -157,31 +181,25 @@ where
         if self.id == other.id {
             return Err(CGError::CannotLinkToItself);
         }
-        let res = self_ids.write().await.insert(other.id().clone())
+        let result = self_ids.write().await.insert(other.id().clone())
             && other_ids.write().await.insert(self.id().clone());
-        dbg!(res);
-        if res {
-            if res {
-                return if is_parent_to_child {
-                    // When self - parent, other - child
-                    other
-                        .content
-                        .read()
-                        .await
-                        .link_accept(self.content.clone())
-                        .await
-                } else {
-                    // When self - child, other - parent
-                    self.content
-                        .read()
-                        .await
-                        .link_accept(other.content.clone())
-                        .await
-                };
-            }
+        if result {
+            return if is_parent_to_child {
+                // When self - parent, other - child
+                let provider: Arc<
+                    RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S> + 'static>,
+                > = self.content.clone();
+                other.content.read().await.link_accept(provider).await
+            } else {
+                // When self - child, other - parent
+                let provider: Arc<
+                    RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S> + 'static>,
+                > = other.content.clone();
+                self.content.read().await.link_accept(provider).await
+            };
         }
 
-        Ok(res)
+        Ok(result)
     }
 
     /// Checks if current node has child node specified by id
@@ -320,7 +338,7 @@ where
         self.parent_ids.read().await.contains(id)
     }
 
-    /// Checks if current node has connections to parents
+    /// Checks if current node has connections to data
     pub async fn has_parents(&self) -> bool {
         !self.parent_ids.read().await.is_empty()
     }
@@ -361,18 +379,24 @@ mod tests {
         }
 
         #[async_trait]
-        impl Content<usize, String, ()> for StringContent {
+        impl Content for StringContent {
+            type IdType = usize;
+            type PayloadType = String;
+            type SignalType = ();
+
             fn data(&self) -> Arc<RwLock<String>> {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                data: Arc<RwLock<String>>,
-            ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
-                let ret = self.data.clone();
-                self.data = data.clone();
-                Ok(ret)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data().read().await.clone())
+            }
+
+            async fn set_data_value(&self, data: String) -> Result<Option<String>, CGError<usize>> {
+                let old_value = self.data.read().await.clone();
+                let mut w_payload = self.data.write().await;
+                *(&mut *w_payload) = data;
+                Ok(Some(old_value))
             }
 
             fn as_any(&self) -> &dyn Any {
@@ -394,18 +418,27 @@ mod tests {
         }
 
         #[async_trait]
-        impl Content<usize, Vec<usize>, ()> for VecUsizeContent {
+        impl Content for VecUsizeContent {
+            type IdType = usize;
+            type PayloadType = Vec<usize>;
+            type SignalType = ();
+
             fn data(&self) -> Arc<RwLock<Vec<usize>>> {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                data: Arc<RwLock<Vec<usize>>>,
-            ) -> Result<Arc<RwLock<Vec<usize>>>, CGError<usize>> {
-                let prev = self.data.clone();
-                self.data = data.clone();
-                Ok(prev)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data().read().await.clone())
+            }
+
+            async fn set_data_value(
+                &self,
+                data: Vec<usize>,
+            ) -> Result<Option<Vec<usize>>, CGError<usize>> {
+                let old_value = self.data.read().await.clone();
+                let mut w_payload = self.data.write().await;
+                *(&mut *w_payload) = data;
+                Ok(Some(old_value))
             }
 
             fn as_any(&self) -> &dyn Any {
@@ -414,20 +447,51 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_create_new_node() {
-            let content = StringContent::new("test");
-            let node = Node::new(0_usize, Arc::new(RwLock::new(content)));
-
-            let content = VecUsizeContent::new(&[1_usize, 2, 3]);
-            let vec_node = Node::new(1_usize, Arc::new(RwLock::new(content)));
+        async fn test_simple_create_new_node() {
+            let node = Node::<usize, String, ()>::new(
+                0_usize,
+                Arc::new(RwLock::new(StringContent::new("test"))),
+            );
 
             assert_eq!(node.id, 0);
-            assert_eq!(node.data().await.read().await.clone(), "test");
+        }
+
+        #[tokio::test]
+        async fn test_create_new_node() {
+            let content = StringContent::new("test");
+            let node = Node::<usize, String, ()>::new(0_usize, Arc::new(RwLock::new(content)));
+
+            let content = VecUsizeContent::new(&[1_usize, 2, 3]);
+            let vec_node =
+                Node::<usize, Vec<usize>, ()>::new(1_usize, Arc::new(RwLock::new(content)));
+
+            assert_eq!(node.id, 0);
+            assert_eq!(
+                node.content()
+                    .await
+                    .read()
+                    .await
+                    .data_value()
+                    .await
+                    .unwrap(),
+                "test"
+            );
             assert!(node.parent_ids.read().await.is_empty());
             assert!(node.child_ids.read().await.is_empty());
 
             assert_eq!(vec_node.id, 1);
-            assert_eq!(vec_node.data().await.read().await.len(), 3);
+            assert_eq!(
+                vec_node
+                    .content()
+                    .await
+                    .read()
+                    .await
+                    .data_value()
+                    .await
+                    .unwrap()
+                    .len(),
+                3
+            );
         }
 
         #[test]
@@ -439,40 +503,24 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_data_accessor_should_return_correct_data_ref() {
+        async fn test_data_value_accessor_should_return_correct_data_ref() {
             let content = StringContent::new("test");
             let node = Node::new(0_usize, Arc::new(RwLock::new(content)));
 
-            assert_eq!(node.data().await.read().await.clone(), "test");
+            assert_eq!(node.data_value().await.unwrap(), "test");
         }
 
         #[tokio::test]
-        async fn test_set_data_allowed_to_change_node_data() -> Result<(), Box<dyn Error>> {
+        async fn test_set_data_value_allowed_to_change_node_data() -> Result<(), Box<dyn Error>> {
             let content = StringContent::new("test");
-            let node = Node::new(0_usize, Arc::new(RwLock::new(content)));
+            let node = Node::<usize, String, ()>::new(0_usize, Arc::new(RwLock::new(content)));
 
-            let old_data = node
-                .set_data(Arc::new(RwLock::new("new test".into())))
-                .await?;
+            let old_data = node.set_data_value("new test".into()).await?;
 
-            assert_eq!(old_data.read().await.clone(), "test");
-            assert_eq!(node.data().await.read().await.clone(), "new test");
+            assert_eq!(old_data.unwrap(), "test");
+            assert_eq!(node.data_value().await.unwrap(), "new test");
 
             Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_data_allowed_change_node_data_by_mutation_node_data() {
-            let content = StringContent::new("test");
-            let node = Node::new(0_usize, Arc::new(RwLock::new(content)));
-
-            {
-                let binding = node.data().await;
-                let mut w_data = binding.write().await;
-                *w_data = "new test".into();
-            }
-
-            assert_eq!(node.data().await.read().await.clone(), "new test");
         }
 
         #[tokio::test]
@@ -833,18 +881,27 @@ mod tests {
         }
 
         #[async_trait]
-        impl Content<&'static str, String, ()> for StringContent {
+        impl Content for StringContent {
+            type IdType = &'static str;
+            type PayloadType = String;
+            type SignalType = ();
+
             fn data(&self) -> Arc<RwLock<String>> {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                data: Arc<RwLock<String>>,
-            ) -> Result<Arc<RwLock<String>>, CGError<&'static str>> {
-                let ret = self.data.clone();
-                self.data = data.clone();
-                Ok(ret)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data.read().await.clone())
+            }
+
+            async fn set_data_value(
+                &self,
+                data: String,
+            ) -> Result<Option<String>, CGError<&'static str>> {
+                let old_data = self.data.read().await.clone();
+                let mut w_payload = self.data.write().await;
+                *w_payload = data;
+                Ok(Some(old_data))
             }
 
             fn as_any(&self) -> &dyn Any {
@@ -866,18 +923,27 @@ mod tests {
         }
 
         #[async_trait]
-        impl Content<&'static str, Vec<usize>, ()> for VecUsizeContent {
+        impl Content for VecUsizeContent {
+            type IdType = &'static str;
+            type PayloadType = Vec<usize>;
+            type SignalType = ();
+
             fn data(&self) -> Arc<RwLock<Vec<usize>>> {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                data: Arc<RwLock<Vec<usize>>>,
-            ) -> Result<Arc<RwLock<Vec<usize>>>, CGError<&'static str>> {
-                let prev = self.data.clone();
-                self.data = data.clone();
-                Ok(prev)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data.read().await.clone())
+            }
+
+            async fn set_data_value(
+                &self,
+                data: Vec<usize>,
+            ) -> Result<Option<Vec<usize>>, CGError<&'static str>> {
+                let old_data = self.data.read().await.clone();
+                let mut w_payload = self.data.write().await;
+                *w_payload = data;
+                Ok(Some(old_data))
             }
 
             fn as_any(&self) -> &dyn Any {
@@ -894,12 +960,12 @@ mod tests {
             );
 
             assert_eq!(node.id, "IL");
-            assert_eq!(node.data().await.read().await.clone(), "test");
+            assert_eq!(node.data_value().await.unwrap(), "test");
             assert!(node.parent_ids.read().await.is_empty());
             assert!(node.child_ids.read().await.is_empty());
 
             assert_eq!(vec_node.id, "IL");
-            assert_eq!(vec_node.data().await.read().await.len(), 3);
+            assert_eq!(vec_node.data_value().await.unwrap().len(), 3);
         }
 
         #[test]
@@ -910,10 +976,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_data_accessor_should_return_correct_data_ref() {
+        async fn test_data_value_accessor_should_return_correct_data_value() {
             let node = Node::new("IL", Arc::new(RwLock::new(StringContent::new("test"))));
 
-            assert_eq!(node.data().await.read().await.clone(), "test");
+            assert_eq!(node.data_value().await.unwrap(), "test");
         }
 
         #[tokio::test]
@@ -921,24 +987,26 @@ mod tests {
             let node = Node::new("IL", Arc::new(RwLock::new(StringContent::new("test"))));
 
             {
-                let data = node.data().await;
-                let mut data_mut = data.write().await;
+                let content = node.content().await;
+                let data_binding = content.read().await.data();
+                let mut data_mut = data_binding.write().await;
                 *data_mut = "new test".into();
             }
 
-            assert_eq!(node.data().await.read().await.clone(), "new test");
+            assert_eq!(node.data_value().await.unwrap(), "new test");
         }
 
         #[tokio::test]
-        async fn test_set_data_should_change_node_data() -> Result<(), Box<dyn Error>> {
-            let node = Node::new("IL", Arc::new(RwLock::new(StringContent::new("test"))));
+        async fn test_set_data_value_should_change_node_data() -> Result<(), Box<dyn Error>> {
+            let node = Node::<&'static str, String>::new(
+                "IL",
+                Arc::new(RwLock::new(StringContent::new("test"))),
+            );
 
-            let prev_data = node
-                .set_data(Arc::new(RwLock::new("new test".into())))
-                .await?;
+            let prev_data = node.set_data_value("new test".into()).await?;
 
-            assert_eq!(prev_data.read().await.clone(), "test");
-            assert_eq!(node.data().await.read().await.clone(), "new test");
+            assert_eq!(prev_data.unwrap(), "test");
+            assert_eq!(node.data_value().await.unwrap(), "new test");
 
             Ok(())
         }
@@ -1267,10 +1335,12 @@ mod tests {
 
         use crate::{Content, Error as CGError};
 
+        /// Like Layer
         type Cellular = HashMap<usize, InnerCell>;
 
         const CELLULAR_CAPACITY: usize = 10;
 
+        /// The Cell
         #[derive(Debug)]
         struct InnerCell {
             inputs: HashMap<usize, broadcast::Receiver<u8>>,
@@ -1278,7 +1348,8 @@ mod tests {
         }
 
         impl InnerCell {
-            fn new(tx: broadcast::Sender<u8>) -> Self {
+            fn new(capacity: usize) -> Self {
+                let (tx, _) = broadcast::channel::<u8>(capacity);
                 Self {
                     inputs: HashMap::new(),
                     output: tx,
@@ -1286,10 +1357,11 @@ mod tests {
             }
         }
 
+        /// Content for cells layer
         #[derive(Debug)]
         struct CellularContent {
             data: Arc<RwLock<Cellular>>,
-            node_id: usize,
+            // node_id: usize,
         }
 
         impl CellularContent {
@@ -1300,12 +1372,11 @@ mod tests {
                 let cell_group_id_prefix = node_id * CELLULAR_CAPACITY;
                 let mut cellulars = HashMap::with_capacity(size);
                 for id in 0..size {
-                    let (tx, _) = broadcast::channel::<u8>(2);
-                    cellulars.insert(cell_group_id_prefix + id, InnerCell::new(tx));
+                    cellulars.insert(cell_group_id_prefix + id, InnerCell::new(2));
                 }
                 Self {
                     data: Arc::new(RwLock::new(cellulars)),
-                    node_id,
+                    // node_id,
                 }
             }
 
@@ -1335,7 +1406,11 @@ mod tests {
         }
 
         #[async_trait]
-        impl Content<usize, Cellular, u8> for CellularContent {
+        impl Content for CellularContent {
+            type IdType = usize;
+            type PayloadType = Cellular;
+            type SignalType = u8;
+
             fn as_any(&self) -> &dyn Any {
                 self
             }
@@ -1344,13 +1419,15 @@ mod tests {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                data: Arc<RwLock<Cellular>>,
-            ) -> Result<Arc<RwLock<Cellular>>, CGError<usize>> {
-                let prev = self.data.clone();
-                self.data = data.clone();
-                Ok(prev)
+            async fn data_value(&self) -> Option<Cellular> {
+                None
+            }
+
+            async fn set_data_value(
+                &self,
+                _data: Cellular,
+            ) -> Result<Option<Cellular>, CGError<usize>> {
+                Ok(None)
             }
 
             async fn provide_receiver(
@@ -1400,7 +1477,13 @@ mod tests {
 
             async fn link_accept(
                 &self,
-                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+                provider: Arc<
+                    RwLock<
+                        dyn Content<IdType = usize, PayloadType = Cellular, SignalType = u8>
+                            + Send
+                            + Sync,
+                    >,
+                >,
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 let src_ids = provider.read().await.provide_src_ids().await;
@@ -1429,7 +1512,13 @@ mod tests {
 
             fn try_link_accept(
                 &self,
-                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+                provider: Arc<
+                    RwLock<
+                        dyn Content<IdType = usize, PayloadType = Cellular, SignalType = u8>
+                            + Send
+                            + Sync,
+                    >,
+                >,
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 let src_ids = provider.try_read()?.try_provide_src_ids()?;
@@ -1453,7 +1542,13 @@ mod tests {
 
             async fn link_disconnect(
                 &self,
-                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+                provider: Arc<
+                    RwLock<
+                        dyn Content<IdType = usize, PayloadType = Cellular, SignalType = u8>
+                            + Send
+                            + Sync,
+                    >,
+                >,
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 let src_ids = provider.read().await.provide_src_ids().await;
@@ -1475,7 +1570,13 @@ mod tests {
 
             fn try_link_disconnect(
                 &self,
-                provider: Arc<RwLock<dyn Content<usize, Cellular, u8> + Send + Sync>>,
+                provider: Arc<
+                    RwLock<
+                        dyn Content<IdType = usize, PayloadType = Cellular, SignalType = u8>
+                            + Send
+                            + Sync,
+                    >,
+                >,
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 let src_ids = provider.try_read()?.try_provide_src_ids()?;
@@ -1504,9 +1605,7 @@ mod tests {
 
             assert_eq!(node.id, 0);
 
-            let binding = node.data().await;
-            let data = binding.read().await;
-            assert_eq!(data.capacity(), 3);
+            assert_eq!(node.data_value().await.unwrap().capacity(), 3);
 
             assert!(!node.has_parents().await);
             assert!(!node.has_children().await);
@@ -1522,13 +1621,16 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_data_accessor_should_return_correct_data_ref() {
+        async fn test_content_accessor_should_return_correct_data_ref() {
             let node_id = 0;
             let content = CellularContent::new(2, node_id);
             let node: Node<usize, Cellular, u8> =
                 Node::new(node_id, Arc::new(RwLock::new(content)));
 
-            assert_eq!(node.data().await.read().await.len(), 2);
+            assert_eq!(
+                node.content().await.read().await.data().read().await.len(),
+                2
+            );
         }
 
         #[tokio::test]

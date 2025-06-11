@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::{Content, Error as CGError, GeneratorMode, IdGenerator, node::Node};
 
-pub type NodesMap<I, T, S> = Arc<RwLock<HashMap<I, Arc<Node<I, T, S>>>>>;
+pub type NodesMap<I, D, S> = Arc<RwLock<HashMap<I, Arc<Node<I, D, S>>>>>;
 
 /// A graph with one input node, many intermediate nodes, and one output node.
 /// The graph keeps track of the uniqueness of node identifiers,
@@ -49,7 +49,7 @@ impl<I, D, S> CyclicGraph<I, D, S, fn(&AtomicUsize, GeneratorMode) -> I>
 where
     I: Clone + Eq + Hash + Debug + Display + Send + Sync + 'static,
     D: Send + Sync + 'static,
-    S: 'static,
+    S: 'static + Send + Sync,
     (): IdGenerator<I>,
 {
     /// Creates new graph with default id generator implementation.
@@ -62,9 +62,9 @@ where
     /// middle nodes. Generated id should be differ from input_id and output_id.
     pub fn new_default(
         input_id: I,
-        input_data: Arc<RwLock<dyn Content<I, D, S>>>,
+        input_data: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
         output_id: I,
-        output_data: Arc<RwLock<dyn Content<I, D, S>>>,
+        output_data: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
         start_id_idx: usize,
     ) -> Result<Self, Box<dyn Error>> {
         Self::new(
@@ -82,7 +82,7 @@ impl<I, D, S, G> CyclicGraph<I, D, S, G>
 where
     I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
     D: Send + Sync + 'static,
-    S: 'static,
+    S: 'static + Send + Sync,
     G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
 {
     /// Creates new graph with input and output nodes.
@@ -229,9 +229,9 @@ where
     /// ```
     pub fn new(
         input_id: I,
-        input_content: Arc<RwLock<dyn Content<I, D, S>>>,
+        input_content: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
         output_id: I,
-        output_content: Arc<RwLock<dyn Content<I, D, S>>>,
+        output_content: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S>>>,
         start_id_idx: usize,
         id_generator: G,
     ) -> Result<Self, Box<dyn Error>> {
@@ -362,7 +362,7 @@ where
     /// ```
     pub async fn append_node(
         &mut self,
-        content: Arc<RwLock<dyn Content<I, D, S> + 'static>>,
+        content: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S> + 'static>>,
         parent_ids: &[I],
         child_ids: &[I],
     ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
@@ -539,7 +539,7 @@ where
     /// ```
     pub async fn insert_between(
         &mut self,
-        data: Arc<RwLock<dyn Content<I, D, S> + 'static>>,
+        data: Arc<RwLock<dyn Content<IdType = I, PayloadType = D, SignalType = S> + 'static>>,
         parent_id: I,
         child_id: I,
     ) -> Result<Arc<Node<I, D, S>>, Box<dyn Error>> {
@@ -716,7 +716,6 @@ where
             .chain(child_results)
             .all(|r| r.unwrap_or(false));
         Ok(all_ok)
-
     }
 
     async fn reconnect_nodes(
@@ -889,6 +888,8 @@ mod tests {
 
     mod for_id_as_usize {
 
+        use async_trait::async_trait;
+
         use crate::Error as CGError;
 
         use super::*;
@@ -906,8 +907,12 @@ mod tests {
             }
         }
 
-        // #[async_trait]
-        impl Content<usize, String, ()> for StringContent {
+        #[async_trait]
+        impl Content for StringContent {
+            type IdType = usize;
+            type PayloadType = String;
+            type SignalType = ();
+
             fn as_any(&self) -> &dyn std::any::Any {
                 self
             }
@@ -916,13 +921,17 @@ mod tests {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                content: Arc<RwLock<String>>,
-            ) -> Result<Arc<RwLock<String>>, CGError<usize>> {
-                let prev = self.data.clone();
-                self.data = content.clone();
-                Ok(prev)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data().read().await.clone())
+            }
+
+            async fn set_data_value(
+                &self,
+                value: Self::PayloadType,
+            ) -> Result<Option<String>, CGError<usize>> {
+                let prev = self.data.read().await.clone();
+                *(&mut *self.data.write().await) = String::from(value);
+                Ok(Some(prev))
             }
         }
 
@@ -1346,7 +1355,16 @@ mod tests {
             let node_opt = graph.get(&2).await;
             assert!(node_opt.is_some());
             let node = node_opt.unwrap();
-            assert!(node.data().await.read().await.contains("middle2"));
+            assert!(
+                node.content()
+                    .await
+                    .read()
+                    .await
+                    .data()
+                    .read()
+                    .await
+                    .contains("middle2")
+            );
             assert_eq!(node.id(), &2);
 
             // try get non-existing node
@@ -1358,6 +1376,8 @@ mod tests {
     }
 
     mod for_id_as_string {
+        use async_trait::async_trait;
+
         use super::*;
         use crate::Error as CGError;
 
@@ -1374,7 +1394,12 @@ mod tests {
             }
         }
 
-        impl Content<String, String, ()> for StringContent {
+        #[async_trait]
+        impl Content for StringContent {
+            type IdType = String;
+            type PayloadType = String;
+            type SignalType = ();
+
             fn as_any(&self) -> &dyn std::any::Any {
                 self
             }
@@ -1383,13 +1408,17 @@ mod tests {
                 self.data.clone()
             }
 
-            fn set_data(
-                &mut self,
-                content: Arc<RwLock<String>>,
-            ) -> Result<Arc<RwLock<String>>, CGError<String>> {
-                let prev = self.data.clone();
-                self.data = content.clone();
-                Ok(prev)
+            async fn data_value(&self) -> Option<Self::PayloadType> {
+                Some(self.data().read().await.clone())
+            }
+
+            async fn set_data_value(
+                &self,
+                data: String,
+            ) -> Result<Option<String>, CGError<String>> {
+                let old_data = self.data.read().await.clone();
+                *(self.data.write().await) = data;
+                Ok(Some(old_data))
             }
         }
 
