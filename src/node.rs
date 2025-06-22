@@ -126,12 +126,12 @@ where
             if is_parent_to_child {
                 // When self - parent, other - child
                 if let Some(other_layer) = other.content.as_layer() {
-                    return other_layer.read().await.connect(&self.content).await;
+                    return other_layer.connect(&self.content).await;
                 }
             } else {
                 // When self - child, other - parent
                 if let Some(self_layer) = self.content.as_layer() {
-                    return self_layer.read().await.connect(&other.content).await;
+                    return self_layer.connect(&other.content).await;
                 }
             }
         }
@@ -194,12 +194,7 @@ where
                 child
                     .content
                     .as_layer()
-                    .map(|layer| {
-                        layer
-                            .try_read()
-                            .map(|layer| layer.try_connect(&self.content))
-                            .unwrap()
-                    })
+                    .map(|layer| layer.try_connect(&self.content))
                     .unwrap_or(Ok(insert_result))
             })
     }
@@ -207,7 +202,7 @@ where
     /// Removes links between child and current node as parent
     pub async fn unlink_child(&self, child: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
         let res = if let Some(layer) = child.content.as_layer() {
-            layer.read().await.disconnect(&self.content).await?
+            layer.disconnect(&self.content).await?
         } else {
             true
         };
@@ -247,12 +242,7 @@ where
                 }
                 self.content
                     .as_layer()
-                    .map(|layer| {
-                        layer
-                            .try_read()
-                            .map(|layer| layer.try_disconnect(&parent.content))
-                            .unwrap()
-                    })
+                    .map(|layer| layer.try_connect(&parent.content))
                     .unwrap_or(Ok(insert_result))
             })
     }
@@ -261,7 +251,7 @@ where
     pub async fn unlink_parent(&self, parent: Arc<Node<I, D, S>>) -> Result<bool, CGError<I>> {
         // let res = self.content.disconnect(&parent.content).await?;
         let res = if let Some(layer) = self.content.as_layer() {
-            layer.read().await.disconnect(&parent.content).await?
+            layer.disconnect(&parent.content).await?
         } else {
             true
         };
@@ -1031,11 +1021,11 @@ mod tests {
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 if let Some(layer) = link_source_content.as_layer() {
-                    let src_ids = layer.read().await.provide_src_ids().await;
+                    let src_ids = layer.provide_src_ids().await;
                     let mut w_dst_data = self.data.write().await;
                     for dst_cell in w_dst_data.values_mut() {
                         for src_idx in &src_ids {
-                            let rx = layer.read().await.provide_receiver(src_idx.clone()).await?;
+                            let rx = layer.provide_receiver(src_idx.clone()).await?;
                             if let Entry::Vacant(dst_entry) = dst_cell.inputs.entry(*src_idx) {
                                 dst_entry.insert(rx);
                                 result &= true;
@@ -1054,10 +1044,10 @@ mod tests {
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 if let Some(layer) = link_source_content.as_layer() {
-                    let src_ids = layer.try_read()?.try_provide_src_ids()?;
+                    let src_ids = layer.try_provide_src_ids()?;
                     for dst_cell in self.data.try_write()?.values_mut() {
                         for src_idx in &src_ids {
-                            let rx = layer.try_read()?.try_provide_receiver(src_idx.clone())?;
+                            let rx = layer.try_provide_receiver(src_idx.clone())?;
                             if let Entry::Vacant(dst_entry) = dst_cell.inputs.entry(*src_idx) {
                                 dst_entry.insert(rx);
                                 result &= true;
@@ -1076,7 +1066,7 @@ mod tests {
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 if let Some(layer) = link_source_content.as_layer() {
-                    let src_ids = layer.read().await.provide_src_ids().await;
+                    let src_ids = layer.provide_src_ids().await;
                     let mut w_dst_data = self.data.write().await;
                     for dst_cell in w_dst_data.values_mut() {
                         if !dst_cell.inputs.is_empty() {
@@ -1102,7 +1092,7 @@ mod tests {
             ) -> Result<bool, CGError<usize>> {
                 let mut result = true;
                 if let Some(layer) = link_source_content.as_layer() {
-                    let src_ids = layer.try_read()?.try_provide_src_ids()?;
+                    let src_ids = layer.try_provide_src_ids()?;
                     for dst_cell in self.data.try_write()?.values_mut() {
                         if !dst_cell.inputs.is_empty() {
                             for src_idx in &src_ids {
@@ -1124,10 +1114,7 @@ mod tests {
 
         fn create_node_with_layer(id: usize, layer_size: usize) -> Arc<Node<usize, (), u8>> {
             let layer = CellularLayer::new(layer_size, id);
-            Arc::new(Node::new(
-                id,
-                Content::new_layer(Arc::new(RwLock::new(layer))),
-            ))
+            Arc::new(Node::new(id, Content::new_layer(Arc::new(layer))))
         }
 
         #[tokio::test]
@@ -1163,21 +1150,13 @@ mod tests {
             assert!(!child_node.has_children().await);
 
             let layer = root_node.content.as_layer().unwrap();
-            let dyn_root_content = layer.read().await;
-            let concrete_root_content = dyn_root_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_root_content = layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(!concrete_root_content.has_incoming_channels().await);
             assert_eq!(concrete_root_content.count_incoming_channels().await, 0);
 
             let layer = child_node.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content = layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content.has_incoming_channels().await);
             assert_eq!(concrete_child_content.count_incoming_channels().await, 6);
@@ -1200,21 +1179,14 @@ mod tests {
             assert!(!child_node.has_children().await);
 
             let layer = root_node.content.as_layer().unwrap();
-            let dyn_root_content = layer.read().await;
-            let root_content_layer = dyn_root_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let root_content_layer = layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(!root_content_layer.has_incoming_channels().await);
             assert_eq!(root_content_layer.count_incoming_channels().await, 0);
 
             let layer = child_node.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1233,11 +1205,8 @@ mod tests {
             assert!(!parent.link_child(child.clone()).await?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1258,11 +1227,8 @@ mod tests {
             assert!(!parent.try_link_child(child.clone())?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1283,11 +1249,8 @@ mod tests {
             assert!(!child.link_parent(parent.clone()).await?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1307,11 +1270,8 @@ mod tests {
             assert!(parent.link_child(child.clone()).await?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1344,11 +1304,8 @@ mod tests {
             assert!(!parent.unlink_child(child.clone()).await?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(!concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1373,11 +1330,8 @@ mod tests {
             assert!(!child.has_parents().await);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(!concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1399,11 +1353,8 @@ mod tests {
             assert!(!child.unlink_parent(parent.clone()).await?);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_child_content = layer.read().await;
-            let concrete_child_content_layer = dyn_child_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_child_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(!concrete_child_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1432,11 +1383,8 @@ mod tests {
             assert!(ids.contains(&2));
 
             let layer = parent.content.as_layer().unwrap();
-            let dyn_parent_content = layer.read().await;
-            let concrete_parent_content_layer = dyn_parent_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_parent_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert_eq!(
                 concrete_parent_content_layer
@@ -1466,11 +1414,8 @@ mod tests {
             assert!(ids.contains(&1));
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_children_content = layer.read().await;
-            let concrete_children_content_layer = dyn_children_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_children_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert_eq!(
                 concrete_children_content_layer
@@ -1495,11 +1440,8 @@ mod tests {
             assert!(!child.has_children().await);
 
             let layer = child.content.as_layer().unwrap();
-            let dyn_children_content = layer.read().await;
-            let concrete_children_content_layer = dyn_children_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_children_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert_eq!(
                 concrete_children_content_layer
@@ -1573,11 +1515,8 @@ mod tests {
             assert!(node1.has_parent(node0.id()).await);
 
             let layer = node0.content.as_layer().unwrap();
-            let dyn_node0_content = layer.read().await;
-            let concrete_node0_content_layer = dyn_node0_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_node0_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_node0_content_layer.has_incoming_channels().await);
             assert_eq!(
@@ -1586,11 +1525,8 @@ mod tests {
             );
 
             let layer = node1.content.as_layer().unwrap();
-            let dyn_node1_content = layer.read().await;
-            let concrete_node1_content_layer = dyn_node1_content
-                .as_any()
-                .downcast_ref::<CellularLayer>()
-                .unwrap();
+            let concrete_node1_content_layer =
+                layer.as_any().downcast_ref::<CellularLayer>().unwrap();
 
             assert!(concrete_node1_content_layer.has_incoming_channels().await);
             assert_eq!(

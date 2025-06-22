@@ -2,7 +2,6 @@ use std::hash::Hash;
 use std::{fmt::Debug, sync::Arc};
 
 use crate::content::{layer_content::LayerContent, simple_content::SimpleContent};
-use tokio::sync::RwLock;
 
 /// Content represents data that is contained in a node.
 /// Two types of content can be used: Simple and Layer.
@@ -28,7 +27,7 @@ where
     S: 'static + Send + Sync + Debug,
 {
     Simple(SimpleContent<D>),
-    Layer(Arc<RwLock<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>>),
+    Layer(Arc<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>),
 }
 
 impl<I, D, S> Content<I, D, S>
@@ -44,7 +43,7 @@ where
 
     /// Creates new instance of Content::Layer.
     pub fn new_layer(
-        layer: Arc<RwLock<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>>,
+        layer: Arc<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>,
     ) -> Self {
         Content::Layer(layer)
     }
@@ -53,7 +52,7 @@ where
     /// Returns None in case of Content::Simple.
     pub fn as_layer(
         &self,
-    ) -> Option<Arc<RwLock<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>>> {
+    ) -> Option<Arc<dyn LayerContent<IdType = I, PayloadType = D, SignalType = S>>> {
         match self {
             // In Simple case there is no layer.
             Content::Simple(_) => None,
