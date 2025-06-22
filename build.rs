@@ -25,8 +25,7 @@ fn main() {
         .unwrap_or_else(|_| panic!("Failed to read template {TEMPLATE_FILE}"));
 
     // Replace placeholders in template
-    let new_content = content
-        .replace("{{CRATE_VERSION}}", &crate_version);
+    let new_content = content.replace("{{CRATE_VERSION}}", &crate_version);
 
     // Write processed readme content to file
     fs::write(&dst_path, new_content)
