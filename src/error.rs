@@ -42,4 +42,8 @@ pub enum CyclicGraphError<I> {
     /// The error was caused when TryLockError raised
     #[error("TryLockError occurred")]
     TryLockError(#[from] tokio::sync::TryLockError),
+
+    /// The error was caused when called unimplemented function
+    #[error("NotImplementedError")]
+    NotImplemented(String),
 }
