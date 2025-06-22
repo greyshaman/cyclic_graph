@@ -265,7 +265,7 @@ where
     /// }
     /// ```
     pub async fn append_node(
-        &mut self,
+        &self,
         content: Content<I, D, S>,
         parent_ids: &[I],
         child_ids: &[I],
@@ -411,7 +411,7 @@ where
     /// }
     /// ```
     pub async fn insert_between(
-        &mut self,
+        &self,
         content: Content<I, D, S>,
         parent_id: I,
         child_id: I,
@@ -494,7 +494,7 @@ where
     ///     Ok(())
     /// }
     /// ```
-    pub async fn remove(&mut self, id: &I) -> Result<bool, Box<dyn Error>> {
+    pub async fn remove(&self, id: &I) -> Result<bool, Box<dyn Error>> {
         // Quick checks without blocking
         if self.input.id() == id {
             return Err(Box::new(CGError::RemoveInput::<I>));
@@ -745,7 +745,7 @@ mod tests {
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             let hidden2_content = Content::new_simple("hidden2".to_string());
             let hidden3_content = Content::new_simple("hidden3".to_string());
@@ -775,8 +775,7 @@ mod tests {
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph =
-                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
 
             let hidden_content = Content::new_simple("hidden".to_string());
             let result = graph.append_node(hidden_content, &[0], &[0]).await;
@@ -788,8 +787,7 @@ mod tests {
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph =
-                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
 
             let hidden_content = Content::new_simple("hidden".to_string());
             let result = graph.append_node(hidden_content, &[1], &[1]).await;
@@ -802,8 +800,7 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph =
-                CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
 
             let hidden_content = Content::new_simple("middle".to_string());
             let result = graph.insert_between(hidden_content, 0, 1).await;
@@ -840,7 +837,7 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             let hidden_content2 = Content::new_simple("middle2".to_string());
             let result = graph.insert_between(hidden_content2, 0, 1).await;
@@ -878,7 +875,7 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             let hidden_content = Content::new_simple("middle2".to_string());
             let n2 = graph.insert_between(hidden_content, 0, 1).await?;
@@ -906,7 +903,7 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             let hidden_content2 = Content::new_simple("middle2".to_string());
             let _n2 = graph.insert_between(hidden_content2, 0, 1).await?;
@@ -929,7 +926,7 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             // Graph state before removing n4 node
             //               input
@@ -1106,7 +1103,7 @@ mod tests {
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let mut graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
 
             let _n2 = graph
                 .insert_between(Content::new_simple("middle2".to_string()), 0, 1)
@@ -1170,7 +1167,7 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_add_new_nodes_with_correct_ids()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input_data".to_string()),
                 String::from("OL"),
@@ -1217,7 +1214,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input_data".to_string()),
                 String::from("OL"),
@@ -1238,7 +1235,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input_data".to_string()),
                 String::from("OL"),
@@ -1260,7 +1257,7 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input_data".to_string()),
                 String::from("OL"),
@@ -1311,7 +1308,7 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input_data".to_string()),
                 String::from("OL"),
@@ -1361,7 +1358,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input".to_string()),
                 String::from("OL"),
@@ -1400,7 +1397,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input".to_string()),
                 String::from("OL"),
@@ -1436,7 +1433,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
-            let mut graph = CyclicGraph::new_default(
+            let graph = CyclicGraph::new_default(
                 String::from("IL"),
                 Content::<String, String>::new_simple("input".to_string()),
                 String::from("OL"),
