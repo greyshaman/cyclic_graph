@@ -23,5 +23,8 @@ thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["full"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 
+[dev-dependencies]
+tokio-stream = "0.1"
+
 [build-dependencies]
 cargo_metadata = "0.20.0"

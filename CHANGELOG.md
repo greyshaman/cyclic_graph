@@ -6,21 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [0.2.0] - 2025-06-22
 
+### Added
+
+- Added dependencies from async-trait, tokio-util, futures, tokio-stream
+- Added new error variants
+- Added links_acceptor and links_provider  traits for using inner connection establishing handlers
+- Added handlers usage in node entity
+- Added content enum with Simple and Layer variants
+
 ### Changed
 
 - Up crate minor version
 - Using content dyn trait object for layer type content
 - Optimized node structure: use content enum to implement simple and layer types cases
 - Moved content types (Simple and Layer) into separate module.
-
-### Added
-
-- Added dependencies from async-trait, tokio-util, futures
-- Added new error variants
-- Added links_acceptor and links_provider  traits for using inner connection establishing handlers
-- Added handlers usage in node entity
-- Added content enum with Simple and Layer variants
-- Added error type on short link node to itself
 
 ## [0.1.2] - 2025-04-09
 
