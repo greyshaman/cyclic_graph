@@ -7,8 +7,6 @@ use std::{
     },
 };
 
-use crate::network::Network;
-
 use super::*;
 
 use async_trait::async_trait;
@@ -36,25 +34,64 @@ struct Synapse {
     /// Used to stop receiving from synaptic connector.
     cancellation_token: CancellationToken,
 
+    /// signal emitter id.
+    uplink_id: String,
+
     /// Downlink for receiving from axon of other neuron.
-    synaptic_connector: broadcast::Receiver<u8>,
+    synaptic_connector: RwLock<broadcast::Receiver<u8>>,
 }
 
 impl Synapse {
     /// Create a new Synapse with specified neuron and synaptic connector.
     fn new(
+        // Weak reference to neuron owned by this synapse.
         neuron: Weak<Neuron>,
+
+        // identifier of synapse.
         id: usize,
+
+        // Weight of synaptic connector.
         weight: u8,
+
+        // signal emitter id.
+        uplink_id: &str,
+
+        // Downlink for receiving from axon of other neuron.
         synaptic_connector: broadcast::Receiver<u8>,
-    ) -> Self {
-        Self {
+    ) -> Arc<Synapse> {
+        let synapse = Arc::new(Self {
             id,
             neuron: neuron.clone(),
             weight,
             cancellation_token: CancellationToken::new(),
-            synaptic_connector,
-        }
+            uplink_id: String::from(uplink_id),
+            synaptic_connector: RwLock::new(synaptic_connector),
+        });
+
+        let c_synapse = synapse.clone();
+        tokio::spawn(async move {
+            let mut synaptic_connector = c_synapse.synaptic_connector.write().await;
+            loop {
+                tokio::select! {
+                    Ok(signal) = synaptic_connector.recv() => {
+                        let signal = signal * c_synapse.weight;
+                        match c_synapse.neuron.upgrade() {
+                            Some(neuron) => {
+                                neuron.operate(signal).await;
+                            },
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+                    _ = c_synapse.cancellation_token.cancelled() => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        synapse
     }
 }
 
@@ -78,7 +115,7 @@ pub struct Neuron {
     /// Reset neuron's activation counter.
     threshold: RwLock<u8>,
     /// Incoming synaptic connectors.
-    synapses: RwLock<HashMap<String, Synapse>>, // Key is downlink id/
+    synapses: RwLock<HashMap<String, Arc<Synapse>>>, // Key is downlink id/
     /// Atomic synapse id generator.
     synapse_id_max: AtomicUsize,
     /// Outgoing axon connector.
@@ -140,12 +177,8 @@ impl Neuron {
 
     /// Send signal to connected downstream neurons.
     async fn send(&self, signal: u8) {
-        &self.axon.send(signal).expect("Error happened");
+        let _ = &self.axon.send(signal).expect("Error happened");
     }
-
-    // fn get_layer(&self) -> Option<Arc<HiddenLayer>> {
-    //     self.layer.upgrade()
-    // }
 
     /// Return Neuron's identifier.
     fn id(&self) -> Arc<String> {
@@ -166,36 +199,21 @@ pub struct HiddenLayer {
     me: Weak<HiddenLayer>,
     /// Unique identifier of the layer.
     id: Arc<String>,
-    /// Reference to the network containing the layer.
-    network: Weak<Network>,
     /// List of neurons contained in the layer.
     neurons: Arc<RwLock<NeuronsMap>>,
 }
 
 impl HiddenLayer {
     /// Create a new HiddenLayer with specified id, network and neurons count.
-    pub fn new(
-        id_idx: usize,
-        network: Weak<Network>,
-        neurons_count: usize,
-        thresholds: &[u8],
-    ) -> Arc<Self> {
-        let layer_id = Arc::new(format!(
-            "{}_H{}",
-            network
-                .upgrade()
-                .map(|net| net.id())
-                .unwrap_or("N9999".to_string()),
-            id_idx,
-        ));
+    pub fn new(id_idx: usize, net_id: &str, neurons_count: usize, thresholds: &[u8]) -> Arc<Self> {
+        let layer_id = Arc::new(format!("{}_H{}", net_id.to_string(), id_idx,));
         Arc::new_cyclic(|weak_self| Self {
             me: weak_self.clone(),
             id: layer_id.clone(),
-            network: network.clone(),
             neurons: Arc::new(RwLock::new((0..neurons_count).fold(
                 BTreeMap::new(),
                 |mut map, id| {
-                    let new_id = format!("{}_{}", layer_id, id);
+                    let new_id = format!("{}_Z{}", layer_id, id);
                     map.insert(
                         new_id.clone(),
                         Neuron::new(
@@ -272,22 +290,24 @@ impl LayerContent for HiddenLayer {
         link_source_content: &Content<String, (), u8>,
     ) -> Result<bool, CGError<String>> {
         let mut result = true;
-        if let Some(layer) = link_source_content.as_layer() {
-            let src_ids = layer.provide_src_ids().await;
+        if let Some(src_layer) = link_source_content.as_layer() {
+            let src_ids = src_layer.provide_src_ids().await;
             let r_neurons = self.neurons.read().await;
             for dst_neuron in r_neurons.values() {
                 for src_id in src_ids.iter() {
                     let mut synapses_binding = dst_neuron.synapses.write().await;
                     if let Entry::Vacant(dendrite) = synapses_binding.entry(src_id.clone()) {
-                        let synaptic_connector = layer.provide_receiver(src_id.clone()).await?;
+                        let synaptic_connector = src_layer.provide_receiver(src_id.clone()).await?;
                         let weight = 1;
                         let synapse = Synapse::new(
                             dst_neuron.me.clone(),
                             dst_neuron.synapse_id_max.fetch_add(1, Ordering::Acquire),
                             weight,
+                            &src_id,
                             synaptic_connector,
                         );
-                        dendrite.insert(synapse);
+                        dendrite.insert(synapse.clone());
+
                         result &= true;
                     } else {
                         // synapse already exists
@@ -305,19 +325,20 @@ impl LayerContent for HiddenLayer {
         link_source_content: &Content<String, (), u8>,
     ) -> Result<bool, CGError<String>> {
         let mut result = true;
-        if let Some(layer) = link_source_content.as_layer() {
-            let src_ids = layer.try_provide_src_ids()?;
+        if let Some(src_layer) = link_source_content.as_layer() {
+            let src_ids = src_layer.try_provide_src_ids()?;
             let r_neurons = self.neurons.try_read()?;
             for dst_neuron in r_neurons.values() {
                 for src_id in src_ids.iter() {
                     let mut synapses_binding = dst_neuron.synapses.try_write()?;
                     if let Entry::Vacant(dendrite) = synapses_binding.entry(src_id.clone()) {
-                        let synaptic_connector = layer.try_provide_receiver(src_id.clone())?;
+                        let synaptic_connector = src_layer.try_provide_receiver(src_id.clone())?;
                         let weight = 1;
                         let synapse = Synapse::new(
                             dst_neuron.me.clone(),
                             dst_neuron.synapse_id_max.fetch_add(1, Ordering::Acquire),
                             weight,
+                            &src_id,
                             synaptic_connector,
                         );
                         dendrite.insert(synapse);
@@ -361,8 +382,8 @@ impl LayerContent for HiddenLayer {
         link_source_content: &Content<String, (), u8>,
     ) -> Result<bool, CGError<String>> {
         let mut result = true;
-        if let Some(layer) = link_source_content.as_layer() {
-            let src_ids = layer.try_provide_src_ids()?;
+        if let Some(srrc_layer) = link_source_content.as_layer() {
+            let src_ids = srrc_layer.try_provide_src_ids()?;
             let r_neurons = self.neurons.try_read()?;
             for dst_neuron in r_neurons.values() {
                 for src_id in src_ids.iter() {
