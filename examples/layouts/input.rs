@@ -1,25 +1,22 @@
 use std::{
     any::Any,
     collections::{BTreeMap, btree_map::Entry},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
 use cyclic_graph::{Content, Error as CGError, content::layer_content::LayerContent};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::{
-    layouts::{CHANNEL_CAPACITY, SignalSender},
-    network::Network,
-};
+use crate::layouts::{CHANNEL_CAPACITY, SignalSender};
 
+/// Input ports collection
 pub type InputsMap = BTreeMap<String, InputPort>;
 
 /// The input port is a receiver of the signal and transmit it to connected neurons.
 #[derive(Debug)]
 pub struct InputPort {
     id: Arc<String>,
-    // layer: Weak<InputLayer>, // FIXME is it need?
     sender: broadcast::Sender<u8>,
 }
 
@@ -29,7 +26,6 @@ impl InputPort {
     pub fn new(id: Arc<String>) -> Self {
         Self {
             id: id.clone(),
-            // layer: layer.clone(),
             sender: broadcast::channel(CHANNEL_CAPACITY).0,
         }
     }
@@ -40,12 +36,9 @@ impl InputPort {
     }
 
     /// Inject the signal to the input port.
-    pub fn inject_signal(&self, signal: u8) -> usize {
-        let result = self
-            .sender
-            .send(signal)
-            .unwrap_or_else(|err| panic!("Signal sending error: {:?}", err));
-        result
+    /// Returns number of sent signals or Sender error.
+    pub fn inject_signal(&self, signal: u8) -> Result<usize, broadcast::error::SendError<u8>> {
+        self.sender.send(signal)
     }
 
     /// Returns true if there are any connected neurons.
@@ -64,22 +57,17 @@ impl SignalSender for InputPort {
 /// to inject signals from outside.
 #[derive(Debug)]
 pub struct InputLayer {
-    me: Weak<InputLayer>,
-    network: Weak<Network>,
     inputs: Arc<RwLock<InputsMap>>,
 }
 
 impl InputLayer {
     /// Create a new input layer with the specified number of inputs.
-    pub fn new(network: Weak<Network>, ports_count: usize) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| Self {
-            me: weak_self.clone(),
-            network: network.clone(),
+    pub fn new(net_id: &str, ports_count: usize) -> Arc<Self> {
+        Arc::new(Self {
             inputs: Arc::new(RwLock::new((0..ports_count).fold(
                 BTreeMap::new(),
                 |mut map, id| {
-                    let net = network.upgrade().expect("specified network not found");
-                    let new_id = format!("{}_I_{}", net.id(), id);
+                    let new_id = format!("{}_IL{}", net_id.to_string(), id);
                     map.insert(new_id.clone(), InputPort::new(Arc::new(new_id)));
                     map
                 },
@@ -88,12 +76,22 @@ impl InputLayer {
     }
 
     /// Sends a signal to the specified port.
-    pub async fn send_to(&self, signal: u8, to_port: &'static str) -> usize {
+    pub async fn send_to(
+        &self,
+        signal: u8,
+        to_port: String,
+    ) -> Result<usize, broadcast::error::SendError<u8>> {
         let input_binding = self.inputs.read().await;
         let r_input_port = input_binding
-            .get(&to_port.to_string())
+            .get(&to_port)
             .expect("Incorrect input port id");
         r_input_port.inject_signal(signal)
+    }
+
+    /// Returns vector with port ids
+    pub async fn port_ids(&self) -> Vec<String> {
+        let r_inputs = self.inputs.read().await;
+        r_inputs.keys().cloned().collect()
     }
 }
 
