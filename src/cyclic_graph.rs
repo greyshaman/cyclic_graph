@@ -423,17 +423,13 @@ where
         }
 
         let parent = self
-            .nodes
-            .read()
-            .await
             .get(&parent_id)
+            .await
             .ok_or(Box::new(CGError::NodeNotFoundById(parent_id.clone())))?
             .clone();
         let child = self
-            .nodes
-            .read()
-            .await
             .get(&child_id)
+            .await
             .ok_or(Box::new(CGError::NodeNotFoundById(child_id.clone())))?
             .clone();
 
@@ -629,6 +625,16 @@ where
     /// ```
     pub async fn get(&self, id: &I) -> Option<Arc<Node<I, D, S>>> {
         self.nodes.read().await.get(id).cloned()
+    }
+
+    /// Returns the reference to input node
+    pub fn input(&self) -> Arc<Node<I, D, S>> {
+        Arc::clone(&self.input)
+    }
+
+    /// Returns the reference to output node
+    pub fn output(&self) -> Arc<Node<I, D, S>> {
+        Arc::clone(&self.output)
     }
 
     /// Returns number of nodes in the graph.
