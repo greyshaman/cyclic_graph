@@ -20,18 +20,20 @@ Add the dependency to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cyclic_graph = "0.1.2"
+cyclic_graph = "0.2.0"
 ```
 
 ## Overview
 
 The idea of creating this library is to provide convenient placement of layers containing interacting neurons within a neuromorphic system. This system assumes a network with one input layer, many hidden layers, and one output layer.
 
-In this network, signals are propagated and processed in a certain direction — from the input layer to the output layer through hidden ones. There may be cyclical connections between hidden layers, including the layer's connection to itself.
+In this network, signals are propagated and processed in a certain direction — from the input layer to the output layer through hidden ones. There may be cyclical connections between hidden layers.
 
 The system structure should be flexible and dynamically changeable. It should allow you to delete, add, and organize connections between layers, as well as provide access to layers and their payloads.
 
 It is proposed to represent the layers as nodes of a graph and operate on them as with nodes of this graph.
+
+Also cyclic graph can playing role as graph storage to keep primitive (simple) data types in nodes.
 
 ## Managing nodes in a graph
 
