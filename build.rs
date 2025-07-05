@@ -6,7 +6,7 @@ const TEMPLATE_FILE: &str = "README.template.md";
 const README_FILE: &str = "README.md";
 
 fn main() {
-    let metadata = MetadataCommand::new().exec().unwrap();
+    let _metadata = MetadataCommand::new().exec().unwrap();
 
     // Get version from Cargo.toml
     let crate_version =
