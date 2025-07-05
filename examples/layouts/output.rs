@@ -1,8 +1,4 @@
-use std::{
-    any::Any,
-    collections::BTreeMap,
-    sync::Arc,
-};
+use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use cyclic_graph::{Content, Error as CGError, content::layer_content::LayerContent};
