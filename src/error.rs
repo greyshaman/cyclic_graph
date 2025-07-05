@@ -11,6 +11,10 @@ pub enum CyclicGraphError<I> {
     #[error("Cannot insert node after output node")]
     InsertAfterOutput,
 
+    /// The error was caused when Node try link to itself
+    #[error("Cannot link node to itself")]
+    CannotLinkToItself,
+
     /// The error was caused when trying to remove the Input Node
     #[error("Cannot remove input node")]
     RemoveInput,
@@ -23,7 +27,23 @@ pub enum CyclicGraphError<I> {
     #[error("Node not found by id: {0}")]
     NodeNotFoundById(I),
 
-    /// The error wes caused when trying add node with non-unique id
+    /// The error was caused when trying add node with non-unique id
     #[error("Entered id `{0}` is not unique")]
     NonUniqueId(I),
+
+    /// The error was caused at LinksProvider handler
+    #[error("LinksProvider handler was caused error: {0}")]
+    LinksProviderHandlerError(String),
+
+    /// The error was caused at LinksAcceptor handler
+    #[error("LinksAcceptor handler was caused error: {0}")]
+    LinksAcceptorHandlerError(String),
+
+    /// The error was caused when TryLockError raised
+    #[error("TryLockError occurred")]
+    TryLockError(#[from] tokio::sync::TryLockError),
+
+    /// The error was caused when called unimplemented function
+    #[error("NotImplementedError")]
+    NotImplemented(String),
 }

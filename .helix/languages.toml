@@ -1,0 +1,5 @@
+[languages.rust]
+filetypes = ["rs"]
+
+[languages.rust.lsp]
+command = ["rust-analyzer"]
