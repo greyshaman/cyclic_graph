@@ -75,11 +75,8 @@ where
     }
 
     /// Returns the node's content.
-    pub fn content(&self) -> Option<Arc<RwLock<D>>> {
-        match &self.content {
-            Content::Simple(data) => Some(data.content()),
-            Content::Layer(_) => None,
-        }
+    pub fn content(&self) -> &Content<I, D, S> {
+        &self.content
     }
 
     /// Returns wrapped payload value of the node's content.
@@ -637,7 +634,7 @@ mod tests {
             let node = create_simple_node("IL", "test".to_string());
 
             {
-                let content = node.content().unwrap();
+                let content = node.content().as_simple().unwrap().content();
                 let mut data_mut = content.write().await;
                 *data_mut = "new test".into();
             }
