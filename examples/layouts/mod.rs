@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-pub const CHANNEL_CAPACITY: usize = 4;
+pub const CHANNEL_CAPACITY: usize = 20;
 
 pub(crate) mod hidden;
 pub(crate) mod input;
