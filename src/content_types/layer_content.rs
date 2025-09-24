@@ -3,7 +3,7 @@ use std::{any::Any, fmt::Debug, hash::Hash};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
-use crate::{Error as CGError, content::content::Content};
+use crate::{Error as CGError, content_types::content::Content};
 
 /// LayerContent is a trait for any content element that can be used in a layer.
 /// The Layer is responsible for managing the connections between the content elements.
