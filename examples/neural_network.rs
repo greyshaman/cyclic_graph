@@ -17,17 +17,13 @@ use crate::{
 mod layouts;
 
 mod network {
-    use std::{
-        error::Error,
-        sync::{Arc, Weak},
-    };
+    use std::{error::Error, sync::Arc};
 
     use cyclic_graph::{Content, CyclicGraph};
 
     use crate::layouts::{input::InputLayer, output::OutputLayer};
 
     pub struct Network {
-        me: Weak<Network>,
         id: String,
         content: Arc<CyclicGraph<String, (), u8>>,
     }
@@ -38,25 +34,23 @@ mod network {
             input_ports_number: usize,
             output_ports_number: usize,
         ) -> Result<Arc<Self>, Box<dyn Error>> {
-            let net = Arc::new_cyclic(|weak_network| {
-                let net_id = format!("N{id}");
-                let input_layer = InputLayer::new(&net_id, input_ports_number);
-                let output_layer = OutputLayer::new(&net_id, output_ports_number);
-                Self {
-                    id: net_id,
-                    me: weak_network.clone(),
-                    content: Arc::new(
-                        CyclicGraph::new_default(
-                            String::from("IL"),
-                            Content::new_layer(input_layer),
-                            String::from("OL"),
-                            Content::new_layer(output_layer),
-                            0_usize,
-                        )
-                        .expect("Cannot create cyclic graph instance"),
-                    ),
-                }
-            });
+            let net_id = format!("N{id}");
+            let input_layer = InputLayer::new(&net_id, input_ports_number);
+            let output_layer = OutputLayer::new(&net_id, output_ports_number);
+            let net = Self {
+                id: net_id,
+                content: Arc::new(
+                    CyclicGraph::new_default(
+                        String::from("IL"),
+                        Content::new_layer(input_layer),
+                        String::from("OL"),
+                        Content::new_layer(output_layer),
+                        0_usize,
+                    )
+                    .expect("Cannot create cyclic graph instance"),
+                ),
+            };
+            let net = Arc::new(net);
             Ok(net)
         }
 
@@ -66,10 +60,6 @@ mod network {
 
         pub fn content(&self) -> Arc<CyclicGraph<String, (), u8>> {
             self.content.clone()
-        }
-
-        pub fn me(&self) -> Weak<Network> {
-            self.me.clone()
         }
     }
 }
@@ -160,7 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
 
-            for i in 0..3 {
+            for _ in 0..3 {
                 let port_idx = ((j + 1) as usize) % port_ids.len();
                 let port_id = port_ids[port_idx].clone();
 

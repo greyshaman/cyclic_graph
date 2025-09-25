@@ -4,7 +4,7 @@ use std::{
 
 use tokio::sync::RwLock;
 
-use crate::{content::content::Content, error::CyclicGraphError as CGError};
+use crate::{content_types::content::Content, error::CyclicGraphError as CGError};
 
 /// A node in a graph with a set of ancestor and descendant nodes, a unique identifier,
 /// and a payload that it is associated with.
@@ -887,7 +887,7 @@ mod tests {
         use async_trait::async_trait;
         use tokio::sync::{RwLock, broadcast};
 
-        use crate::{Content, Error as CGError, content::layer_content::LayerContent};
+        use crate::{Content, Error as CGError, content_types::layer_content::LayerContent};
 
         /// The Cell
         #[derive(Debug)]

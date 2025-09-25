@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use std::{fmt::Debug, sync::Arc};
 
-use crate::content::{layer_content::LayerContent, simple_content::SimpleContent};
+use crate::content_types::{layer_content::LayerContent, simple_content::SimpleContent};
 
 /// Content represents data that is contained in a node.
 /// Two types of content can be used: Simple and Layer.

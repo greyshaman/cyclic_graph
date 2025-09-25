@@ -662,10 +662,18 @@ where
     ) {
         let children_ids = node.child_ids().await;
 
-        for child_id in children_ids.iter() {
-            if let Some(child) = self.nodes.read().await.get(child_id) {
-                if visited.write().await.insert(child_id.clone()) {
-                    result.write().await.push(child_id.clone());
+        for child_id_ref in children_ids.iter() {
+            let child_id = child_id_ref.clone();
+
+            if let Some(child) = self.nodes.read().await.get(child_id_ref) {
+                let mut w_visited = visited.write().await;
+                if w_visited.insert(child_id.clone()) {
+                    drop(w_visited);
+
+                    let mut w_result = result.write().await;
+                    w_result.push(child_id.clone());
+                    drop(w_result);
+
                     self.dfs(child.clone(), visited.clone(), result.clone())
                         .await;
                 }
@@ -686,10 +694,10 @@ where
 
             let ids = node.child_ids().await;
             for id in ids.iter() {
-                if let Some(child) = self.nodes.read().await.get(id) {
-                    if visited.insert(id.clone()) {
-                        queue.push(child.clone());
-                    }
+                if let Some(child) = self.nodes.read().await.get(id)
+                    && visited.insert(id.clone())
+                {
+                    queue.push(child.clone());
                 }
             }
         }
