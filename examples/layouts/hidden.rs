@@ -10,7 +10,7 @@ use std::{
 use super::*;
 
 use async_trait::async_trait;
-use cyclic_graph::{Content, Error as CGError, content::layer_content::LayerContent};
+use cyclic_graph::{Content, Error as CGError, content_types::layer_content::LayerContent};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
