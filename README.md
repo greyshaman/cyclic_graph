@@ -20,7 +20,7 @@ Add the dependency to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cyclic_graph = "0.2.0"
+cyclic_graph = "0.2.1"
 ```
 
 ## Overview
