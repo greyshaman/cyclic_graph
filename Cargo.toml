@@ -1,6 +1,6 @@
 [package]
 name = "cyclic_graph"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 authors = ["Sergey Reshetnikov <shaman@simmirra.com>"]
 license = "MIT"
@@ -20,11 +20,11 @@ async-trait = "0.1"
 futures = { version = "0.3", features = ["futures-executor"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"]}
 
 [dev-dependencies]
 
 [build-dependencies]
-cargo_metadata = "0.22"
+cargo_metadata = "0.23"
