@@ -10,7 +10,7 @@ use std::{
 use super::*;
 
 use async_trait::async_trait;
-use cyclic_graph::{Content, Error as CGError, content_types::layer_content::LayerContent};
+use cyclic_graph::{Content, Error as CGError, LayerContent};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +19,7 @@ pub type NeuronsMap = BTreeMap<String, Arc<Neuron>>;
 
 /// The Synapse is connector between other neuron's axon
 /// and self neuron's dendrite.
+#[allow(dead_code)]
 #[derive(Debug)]
 struct Synapse {
     /// Identifier of synaptic connector.
@@ -106,6 +107,7 @@ impl Drop for Synapse {
 #[derive(Debug)]
 pub struct Neuron {
     /// Identifier of neuron.
+    #[allow(unused_variables)]
     id: Arc<String>,
     /// Weak reference to neuron owned by this synapse.
     me: Weak<Neuron>,
@@ -143,8 +145,8 @@ impl Neuron {
             let current_value = self.accumulator.load(Ordering::Acquire);
             let new_value = current_value + weighted_signal;
 
-            if new_value >= *self.threshold.read().await {
-                if self
+            if new_value >= *self.threshold.read().await
+                && self
                     .accumulator
                     .compare_exchange(
                         current_value,
@@ -153,11 +155,10 @@ impl Neuron {
                         Ordering::Acquire,
                     )
                     .is_ok()
-                {
-                    self.accumulator.store(0, Ordering::Release);
-                    self.send(new_value).await;
-                    return;
-                }
+            {
+                self.accumulator.store(0, Ordering::Release);
+                self.send(new_value).await;
+                return;
             }
 
             if self
@@ -181,6 +182,7 @@ impl Neuron {
     }
 
     /// Return Neuron's identifier.
+    #[allow(dead_code)]
     fn id(&self) -> Arc<String> {
         self.id.clone()
     }
@@ -196,8 +198,10 @@ impl SignalSender for Neuron {
 #[derive(Debug)]
 pub struct HiddenLayer {
     /// Self-weak reference.
+    #[allow(dead_code)]
     me: Weak<HiddenLayer>,
     /// Unique identifier of the layer.
+    #[allow(dead_code)]
     id: Arc<String>,
     /// List of neurons contained in the layer.
     neurons: Arc<RwLock<NeuronsMap>>,
@@ -206,7 +210,7 @@ pub struct HiddenLayer {
 impl HiddenLayer {
     /// Create a new HiddenLayer with specified id, network and neurons count.
     pub fn new(id_idx: usize, net_id: &str, neurons_count: usize, thresholds: &[u8]) -> Arc<Self> {
-        let layer_id = Arc::new(format!("{}_H{}", net_id.to_string(), id_idx,));
+        let layer_id = Arc::new(format!("{}_H{}", net_id, id_idx,));
         Arc::new_cyclic(|weak_self| Self {
             me: weak_self.clone(),
             id: layer_id.clone(),
@@ -303,7 +307,7 @@ impl LayerContent for HiddenLayer {
                             dst_neuron.me.clone(),
                             dst_neuron.synapse_id_max.fetch_add(1, Ordering::Acquire),
                             weight,
-                            &src_id,
+                            src_id,
                             synaptic_connector,
                         );
                         dendrite.insert(synapse.clone());
@@ -338,7 +342,7 @@ impl LayerContent for HiddenLayer {
                             dst_neuron.me.clone(),
                             dst_neuron.synapse_id_max.fetch_add(1, Ordering::Acquire),
                             weight,
-                            &src_id,
+                            src_id,
                             synaptic_connector,
                         );
                         dendrite.insert(synapse);
