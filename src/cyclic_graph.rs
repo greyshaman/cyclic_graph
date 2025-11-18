@@ -13,6 +13,8 @@ use crate::{Content, Error as CGError, GeneratorMode, IdGenerator, node::Node};
 
 pub type NodesMap<I, D, S> = Arc<RwLock<HashMap<I, Arc<Node<I, D, S>>>>>;
 
+pub type BoxedGeneratorIdFn<I> = Box<dyn Fn(&AtomicUsize, GeneratorMode) -> I>;
+
 /// A graph with one input node, many intermediate nodes, and one output node.
 /// The graph keeps track of the uniqueness of node identifiers,
 /// allowing you to add new nodes and create connections to existing nodes within the graph.
@@ -23,13 +25,11 @@ pub type NodesMap<I, D, S> = Arc<RwLock<HashMap<I, Arc<Node<I, D, S>>>>>;
 /// I - the nodes identifier type
 /// D - the type of nodes payload data
 /// S - the type of signal translated between inner elements of node content
-/// G - identifier generator function
-pub struct CyclicGraph<I, D: 'static, S = (), G = fn(&AtomicUsize, GeneratorMode) -> I>
+pub struct CyclicGraph<I, D, S>
 where
     I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
-    D: Send + Sync + 'static + Clone + Debug,
-    G: Fn(&AtomicUsize, GeneratorMode) -> I,
-    S: 'static + Send + Sync + Debug,
+    D: Clone + Debug + Send + Sync + 'static,
+    S: Debug + Send + Sync + 'static,
 {
     /// The input node
     input: Arc<Node<I, D, S>>,
@@ -41,169 +41,266 @@ where
     nodes: NodesMap<I, D, S>,
 
     /// The id generator function
-    id_generator: G,
+    id_generator: BoxedGeneratorIdFn<I>,
 
     /// Helper to id generator function
     recent_id: AtomicUsize,
 }
 
-impl<I, D, S> CyclicGraph<I, D, S, fn(&AtomicUsize, GeneratorMode) -> I>
+/// The SycleGraph builder is useful to build new CycleGraph instance.
+///
+/// # Example for graph with usize id nodes:
+///
+/// ```rust
+/// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content, Error as CGError};
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+/// use std::error::Error;
+/// use std::sync::Arc;
+/// use tokio::sync::RwLock;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let graph = CyclicGraphBuilder::new()
+///         .with_input_id(0_usize) // input_id
+///         .with_input_data(Content::<usize, String>::new_simple("input".to_string())) // input node's payload data
+///         .with_output_id(1) // output id
+///         .with_output_data(Content::new_simple("output".to_string())) // output node's payload data
+///         .with_start_id_idx(2) // start_id_idx - from this number generator will be generate ids for new nodes
+///         .with_id_generator(Box::new(&|recent_id: &AtomicUsize, mode: GeneratorMode|{
+///             match mode {
+///                 GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
+///                 GeneratorMode::DryRun => recent_id.load(Ordering::Acquire),
+///             }
+///         }))
+///         .build()?;
+///
+///     assert_eq!(graph.len().await, 2);
+///     Ok(())
+/// }
+/// ```
+///
+/// # Example for graph with String id node:
+///
+/// ```rust
+/// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content, Error as CGError};
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+/// use std::error::Error;
+/// use std::sync::Arc;
+/// use tokio::sync::RwLock;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let graph = CyclicGraphBuilder::new()
+///         .with_input_id("IL".to_string()) // input_id
+///         .with_input_data(Content::<String, String>::new_simple("input".to_string())) // input node's payload data
+///         .with_output_id("OL".to_string()) // output id
+///         .with_output_data(Content::new_simple("output".to_string())) // output node's payload data
+///         .with_start_id_idx(0) // start_id_idx - from this number generator will be generate ids for new nodes
+///         .with_id_generator(Box::new(&|recent_id: &AtomicUsize, mode: GeneratorMode|{
+///             match mode {
+///                 GeneratorMode::Normal => {
+///                     format!(
+///                         "ML_{}",
+///                         recent_id.fetch_add(1, Ordering::Relaxed),
+///                     )
+///                 }
+///                 GeneratorMode::DryRun => {
+///                     format!(
+///                         "ML_{}",
+///                         recent_id.load(Ordering::Acquire),
+///                     )
+///                 }
+///             }
+///         }))
+///         .build()?;
+///
+///     assert_eq!(graph.len().await, 2);
+///     Ok(())
+/// }
+/// ```
+pub struct CyclicGraphBuilder<I, D, S>
+where
+    I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
+    D: Clone + Debug + Send + Sync + 'static,
+    S: Debug + Send + Sync + 'static,
+{
+    /// The input node
+    input: Option<Content<I, D, S>>,
+
+    /// The Id of input node
+    input_id: Option<I>,
+
+    /// The output node
+    output: Option<Content<I, D, S>>,
+
+    /// The Id of output node
+    output_id: Option<I>,
+
+    /// The id counter for content nodes ids
+    start_id_idx: Option<usize>,
+
+    /// The id generator function
+    id_generator: BoxedGeneratorIdFn<I>,
+}
+
+impl<I, D, S> Default for CyclicGraphBuilder<I, D, S>
 where
     I: Clone + Eq + Hash + Debug + Display + Send + Sync + 'static,
-    D: Send + Sync + 'static + Clone + Debug,
-    S: 'static + Send + Sync + Debug,
+    D: Clone + Debug + Send + Sync + 'static,
+    S: Debug + Send + Sync + 'static,
     (): IdGenerator<I>,
 {
-    /// Creates new graph with default id generator implementation and simple content.
-    /// Parameters are using for initial graph configuration.
-    /// Using `input_id` - to specify input node identifier,
-    /// `input_data` - to specify input node content value,
-    /// `output_id` - to specify output identifier which should differ from input_id,
-    /// `output_data` - to specify output node content value,
-    /// `start_id_idx` - id usize number from which start counter to generate unique
-    /// middle nodes. Generated id should be differ from input_id and output_id.
-    pub fn new_default(
-        input_id: I,
-        input_data: Content<I, D, S>,
-        output_id: I,
-        output_data: Content<I, D, S>,
-        start_id_idx: usize,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::new(
-            input_id,
-            input_data,
-            output_id,
-            output_data,
-            start_id_idx,
-            |recent_id, mode| <() as IdGenerator<I>>::generate_id(recent_id, mode),
-        )
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl<I, D, S, G> CyclicGraph<I, D, S, G>
+impl<I, D, S> CyclicGraphBuilder<I, D, S>
 where
-    I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
-    D: Send + Sync + 'static + Clone + Debug,
-    S: 'static + Send + Sync + Debug,
-    G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
+    I: Clone + Eq + Hash + Debug + Display + Send + Sync + 'static,
+    D: Clone + Debug + Send + Sync + 'static,
+    S: Debug + Send + Sync + 'static,
+    (): IdGenerator<I>,
 {
-    /// Creates new graph with input and output nodes.
-    /// Parameters are using for initial graph configuration.
-    /// Using `input_id` - to specify input node identifier,
-    /// `input_data` - to specify input node content data,
-    /// `output_id` - to specify output identifier which should differ from input_id,
-    /// `output_data` - to specify output node content data,
-    /// `start_id_idx` - is usize number from which start counter to generate unique
-    ///  middle nodes. Generated id should be differ from input_id and output_id.
-    /// The `id_generator` - is using to set generator function executed when new node
-    /// would append or insert into graph.
-    ///
-    /// # Example for graph with usize id nodes:
-    ///
-    /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
-    /// use std::sync::atomic::Ordering;
-    /// use std::error::Error;
-    /// use std::sync::Arc;
-    /// use tokio::sync::RwLock;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let graph = CyclicGraph::new(
-    ///         0_usize, // input_id
-    ///         Content::<usize, String>::new_simple("input".to_string()), // payload data for input node
-    ///         1, // output_id
-    ///         Content::new_simple("output".to_string()), // payload data for output node
-    ///         2, // start_id_idx - from this number generator will be generate id for new nodes
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => {
-    ///                 recent_id.fetch_add(1, Ordering::Relaxed)
-    ///             }
-    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-    ///         }
-    ///     )?;
-    ///
-    ///     assert_eq!(graph.len().await, 2);
-    ///     Ok(())
-    /// }
-    /// ```
-    ///
-    /// # Example for graph with String id node:
-    ///
-    /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
-    /// use std::{sync::atomic::Ordering, error::Error};
-    /// use std::sync::Arc;
-    /// use tokio::sync::RwLock;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let graph = CyclicGraph::new(
-    ///         String::from("IL"), // input_id
-    ///         Content::<String, String>::new_simple("input".to_string()), // input_data
-    ///         String::from("OL"), // output_id
-    ///         Content::new_simple("output".to_string()), // output_data
-    ///         0, // start_id_idx
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => {
-    ///                 format!(
-    ///                     "ML_{}",
-    ///                     recent_id.fetch_add(1, Ordering::Release),
-    ///                 )
-    ///             }
-    ///             GeneratorMode::DryRun => {
-    ///                 format!(
-    ///                     "ML_{}",
-    ///                     recent_id.load(Ordering::Acquire),
-    ///                 )
-    ///             }
-    ///         }
-    ///     )?;
-    ///
-    ///     assert_eq!(graph.len().await, 2);
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn new(
-        input_id: I,
-        input_content: Content<I, D, S>,
-        output_id: I,
-        output_content: Content<I, D, S>,
-        start_id_idx: usize,
-        id_generator: G,
-    ) -> Result<Self, Box<dyn Error>> {
-        if input_id == output_id {
-            return Err(Box::new(CGError::NonUniqueId(output_id.clone())));
+    /// Builds empty builder instance
+    pub fn new() -> Self {
+        Self {
+            input: None,
+            input_id: None,
+            output: None,
+            output_id: None,
+            start_id_idx: None,
+            id_generator: Box::new(|recent_id, mode| {
+                <() as IdGenerator<I>>::generate_id(recent_id, mode)
+            }),
         }
-
-        let input = Arc::new(Node::new(input_id, input_content));
-        let output = Arc::new(Node::new(output_id, output_content));
-
-        let mut nodes = HashMap::new();
-        nodes.insert(input.id().clone(), input.clone());
-        nodes.insert(output.id().clone(), output.clone());
-
-        let nodes = Arc::new(RwLock::new(nodes));
-
-        input.try_link_child(output.clone())?;
-
-        let recent_id = AtomicUsize::new(start_id_idx);
-        let try_id = id_generator(&recent_id, GeneratorMode::DryRun);
-
-        if input.id() == &try_id || output.id() == &try_id {
-            return Err(Box::new(CGError::NonUniqueId(try_id.clone())));
-        }
-
-        Ok(Self {
-            input,
-            output,
-            nodes,
-            id_generator,
-            recent_id,
-        })
     }
 
+    /// Sets input node content data
+    pub fn with_input_data(mut self, content: Content<I, D, S>) -> Self {
+        self.input = Some(content);
+        self
+    }
+
+    /// Sets id for input node identifier
+    pub fn with_input_id(mut self, id: I) -> Self {
+        self.input_id = Some(id);
+        self
+    }
+
+    /// Sets output node content data
+    pub fn with_output_data(mut self, content: Content<I, D, S>) -> Self {
+        self.output = Some(content);
+        self
+    }
+
+    /// Sets id for input node identifier
+    pub fn with_output_id(mut self, id: I) -> Self {
+        self.output_id = Some(id);
+        self
+    }
+
+    /// Sets usize number from which start counter to generate unique id
+    /// for middle nodes. Generated id should be differ from input_id
+    /// and output_id
+    pub fn with_start_id_idx(mut self, idx: usize) -> Self {
+        self.start_id_idx = Some(idx);
+        self
+    }
+
+    /// Sets id generator function. It is used to set generator
+    /// function executed when new node would append or insert into graph
+    pub fn with_id_generator(mut self, generator_fn: BoxedGeneratorIdFn<I>) -> Self {
+        self.id_generator = generator_fn;
+        self
+    }
+
+    /// The build function create CyclicGraph instance using collected params
+    pub fn build(self) -> Result<CyclicGraph<I, D, S>, Box<dyn Error>> {
+        let mut error_message = vec![];
+
+        if self.input.is_none() {
+            error_message.push("input".to_string());
+        }
+        if self.input_id.is_none() {
+            error_message.push("input_id".to_string());
+        }
+        if self.output.is_none() {
+            error_message.push("output".to_string());
+        }
+        if self.output_id.is_none() {
+            error_message.push("output_id".to_string());
+        }
+        if self.start_id_idx.is_none() {
+            error_message.push("start_id_idx".to_string());
+        }
+
+        let error_message = {
+            let error_messages_length = error_message.len();
+            error_message
+                .into_iter()
+                .enumerate()
+                .map(|(idx, field)| {
+                    if idx < error_messages_length - 1 {
+                        format!("{field}, ")
+                    } else {
+                        field
+                    }
+                })
+                .collect::<String>()
+        };
+
+        if error_message.is_empty() {
+            let input = Arc::new(Node::new(
+                self.input_id.expect("input node id should be provided"),
+                self.input.expect("input node content should be provided"),
+            ));
+            let output = Arc::new(Node::new(
+                self.output_id.expect("output node id should be provided"),
+                self.output.expect("output node content should be provided"),
+            ));
+
+            let mut nodes = HashMap::new();
+            nodes.insert(input.id().clone(), input.clone());
+            nodes.insert(output.id().clone(), output.clone());
+
+            let nodes = Arc::new(RwLock::new(nodes));
+
+            input.try_link_child(output.clone())?;
+
+            let recent_id = AtomicUsize::new(
+                self.start_id_idx
+                    .expect("start node id idx should be provided"),
+            );
+
+            let try_id = self.id_generator.as_ref()(&recent_id, GeneratorMode::DryRun);
+
+            if input.id() == &try_id || output.id() == &try_id {
+                return Err(Box::new(CGError::NonUniqueId(try_id.clone())));
+            }
+
+            Ok(CyclicGraph {
+                input,
+                output,
+                nodes,
+                id_generator: self.id_generator,
+                recent_id,
+            })
+        } else {
+            Err(Box::new(CGError::<I>::BuildCyclicGraphRequiredFieldsError(
+                error_message,
+            )))
+        }
+    }
+}
+
+impl<I, D, S> CyclicGraph<I, D, S>
+where
+    I: Clone + Eq + Hash + Debug + Display + Sync + Send + 'static,
+    D: Clone + Debug + Send + Sync + 'static,
+    S: Debug + Send + Sync + 'static,
+    // G: Fn(&AtomicUsize, GeneratorMode) -> I + Sync + Send + 'static,
+{
     /// Appends node to graph with create links to specified
     /// parents `parent_ids` and children `child_ids` by ids.
     ///
@@ -241,22 +338,18 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content};
+    /// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content};
     /// use std::{sync::atomic::Ordering, error::Error};
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let mut graph = CyclicGraph::new(
-    ///         0,
-    ///         Content::<usize, String>::new_simple("start".to_string()),
-    ///         1,
-    ///         Content::new_simple("end".to_string()),
-    ///         2,
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-    ///         },
-    ///     )?;
+    ///     let mut graph = CyclicGraphBuilder::new()
+    ///         .with_input_id(0_usize)
+    ///         .with_input_data(Content::<usize, String>::new_simple("start".to_string()))
+    ///         .with_output_id(1)
+    ///         .with_output_data(Content::new_simple("end".to_string()))
+    ///         .with_start_id_idx(2)
+    ///         .build()?;
     ///
     ///     let n = graph.append_node(Content::new_simple("hidden".to_string()), &[0], &[1]).await?;
     ///
@@ -380,7 +473,7 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
+    /// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content, Error as CGError};
     /// use std::{sync::atomic::Ordering, error::Error};
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
@@ -388,17 +481,13 @@ where
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let mut graph = CyclicGraph::new(
-    ///         0,
-    ///         Content::<usize, String>::new_simple("start".to_string()),
-    ///         1,
-    ///         Content::new_simple("end".to_string()),
-    ///         2,
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-    ///         },
-    ///     )?;
+    ///     let mut graph = CyclicGraphBuilder::new()
+    ///         .with_input_id(0_usize)
+    ///         .with_input_data(Content::<usize, String>::new_simple("start".to_string()))
+    ///         .with_output_id(1)
+    ///         .with_output_data(Content::new_simple("end".to_string()))
+    ///         .with_start_id_idx(2)
+    ///         .build()?;
     ///
     ///     let n = graph.insert_between(
     ///         Content::new_simple("hidden".to_string()),
@@ -456,7 +545,7 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
+    /// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content, Error as CGError};
     /// use std::sync::atomic::Ordering;
     /// use std::error::Error;
     /// use std::sync::Arc;
@@ -464,17 +553,13 @@ where
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let mut graph = CyclicGraph::new(
-    ///         0,
-    ///         Content::<usize, String>::new_simple("start".to_string()),
-    ///         1,
-    ///         Content::new_simple("end".to_string()),
-    ///         2,
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-    ///         },
-    ///     )?;
+    ///     let mut graph = CyclicGraphBuilder::new()
+    ///         .with_input_id(0_usize)
+    ///         .with_input_data(Content::<usize, String>::new_simple("start".to_string()))
+    ///         .with_output_id(1)
+    ///         .with_output_data(Content::new_simple("end".to_string()))
+    ///         .with_start_id_idx(2)
+    ///         .build()?;
     ///
     ///     let n = graph.insert_between(
     ///         Content::new_simple("hidden".to_string()),
@@ -591,7 +676,7 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use cyclic_graph::{CyclicGraph, GeneratorMode, Content, Error as CGError};
+    /// use cyclic_graph::{CyclicGraph, CyclicGraphBuilder, GeneratorMode, Content, Error as CGError};
     /// use std::sync::atomic::Ordering;
     /// use std::error::Error;
     /// use std::sync::Arc;
@@ -599,17 +684,13 @@ where
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let mut graph = CyclicGraph::new(
-    ///         0,
-    ///         Content::<usize, String>::new_simple("start".to_string()),
-    ///         1,
-    ///         Content::new_simple("end".to_string()),
-    ///         2,
-    ///         |recent_id, mode| match mode {
-    ///             GeneratorMode::Normal => recent_id.fetch_add(1, Ordering::Relaxed),
-    ///             GeneratorMode::DryRun => recent_id.load(Ordering::Relaxed),
-    ///         },
-    ///     )?;
+    ///     let mut graph = CyclicGraphBuilder::new()
+    ///         .with_input_id(0_usize)
+    ///         .with_input_data(Content::<usize, String>::new_simple("start".to_string()))
+    ///         .with_output_id(1)
+    ///         .with_output_data(Content::new_simple("end".to_string()))
+    ///         .with_start_id_idx(2)
+    ///         .build()?;
     ///
     ///     let n = graph.insert_between(
     ///         Content::new_simple("hidden".to_string()),
@@ -653,7 +734,7 @@ where
         result.read().await.clone()
     }
 
-    #[async_recursion]
+    #[async_recursion(?Send)]
     async fn dfs(
         &self,
         node: Arc<Node<I, D, S>>,
@@ -716,7 +797,13 @@ mod tests {
         async fn test_new_default_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             assert_eq!(graph.input.id(), &0);
             assert_eq!(graph.output.id(), &1);
@@ -732,7 +819,13 @@ mod tests {
         async fn test_new_default_should_return_error_when_terminal_nodes_has_same_ids() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let result = CyclicGraph::new_default(0, input_content, 0, output_content, 2);
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(0)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build();
 
             assert!(result.is_err());
         }
@@ -741,7 +834,13 @@ mod tests {
         async fn test_new_default_should_return_error_when_start_id_idx_same_of_input_node() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let result = CyclicGraph::new_default(0, input_content, 1, output_content, 0);
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(0)
+                .build();
 
             assert!(result.is_err());
         }
@@ -750,7 +849,13 @@ mod tests {
         async fn test_new_default_should_return_error_when_start_id_idx_same_of_output_node() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let result = CyclicGraph::new_default(0, input_content, 1, output_content, 1);
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(0)
+                .build();
 
             assert!(result.is_err());
         }
@@ -759,7 +864,13 @@ mod tests {
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             let hidden2_content = Content::new_simple("hidden2".to_string());
             let hidden3_content = Content::new_simple("hidden3".to_string());
@@ -789,7 +900,14 @@ mod tests {
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()
+                .unwrap();
 
             let hidden_content = Content::new_simple("hidden".to_string());
             let result = graph.append_node(hidden_content, &[0], &[0]).await;
@@ -801,7 +919,14 @@ mod tests {
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()
+                .unwrap();
 
             let hidden_content = Content::new_simple("hidden".to_string());
             let result = graph.append_node(hidden_content, &[1], &[1]).await;
@@ -814,7 +939,14 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2).unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()
+                .unwrap();
 
             let hidden_content = Content::new_simple("middle".to_string());
             let result = graph.insert_between(hidden_content, 0, 1).await;
@@ -851,7 +983,13 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             let hidden_content2 = Content::new_simple("middle2".to_string());
             let result = graph.insert_between(hidden_content2, 0, 1).await;
@@ -889,7 +1027,13 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             let hidden_content = Content::new_simple("middle2".to_string());
             let n2 = graph.insert_between(hidden_content, 0, 1).await?;
@@ -917,7 +1061,13 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             let hidden_content2 = Content::new_simple("middle2".to_string());
             let _n2 = graph.insert_between(hidden_content2, 0, 1).await?;
@@ -940,7 +1090,13 @@ mod tests {
         -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             // Graph state before removing n4 node
             //               input
@@ -1117,7 +1273,13 @@ mod tests {
         async fn test_get_node_by_node_id() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
-            let graph = CyclicGraph::new_default(0, input_content, 1, output_content, 2)?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(2)
+                .build()?;
 
             let _n2 = graph
                 .insert_between(Content::new_simple("middle2".to_string()), 0, 1)
@@ -1145,13 +1307,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_default_can_create_cyclic_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            )?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()?;
 
             assert_eq!(graph.input.id(), "IL");
             assert_eq!(graph.output.id(), "OL");
@@ -1167,13 +1331,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_new_default_should_return_error_when_terminal_nodes_has_same_ids() {
-            let result = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("IL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            );
+            let result = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("IL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build();
 
             assert!(result.is_err());
         }
@@ -1181,13 +1347,15 @@ mod tests {
         #[tokio::test]
         async fn test_append_node_should_add_new_nodes_with_correct_ids()
         -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            )?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()?;
 
             let new_node = graph
                 .append_node(
@@ -1228,14 +1396,17 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_input_id_in_children_param() {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            )
-            .unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()
+                .unwrap();
+
             let result = graph
                 .append_node(
                     Content::new_simple("hidden".to_string()),
@@ -1249,14 +1420,17 @@ mod tests {
 
         #[tokio::test]
         async fn test_append_node_should_return_error_when_output_id_in_parent_param() {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            )
-            .unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()
+                .unwrap();
+
             let result = graph
                 .append_node(
                     Content::new_simple("hidden".to_string()),
@@ -1271,14 +1445,16 @@ mod tests {
         #[tokio::test]
         async fn test_serial_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output_data".to_string()),
-                0,
-            )
-            .unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()
+                .unwrap();
 
             let result = graph
                 .insert_between(
@@ -1322,14 +1498,16 @@ mod tests {
         #[tokio::test]
         async fn test_parallel_insert_between_create_and_inset_new_nodes_between_specified_nodes()
         -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input_data".to_string()),
-                String::from("OL"),
-                Content::new_simple("output".to_string()),
-                0,
-            )
-            .unwrap();
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()
+                .unwrap();
 
             let result = graph
                 .insert_between(
@@ -1372,13 +1550,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_serial_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input".to_string()),
-                String::from("OL"),
-                Content::new_simple("output".to_string()),
-                0,
-            )?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()?;
 
             let n0 = graph
                 .insert_between(
@@ -1411,13 +1591,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_traverse_from_input_node_for_parallel_graph() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input".to_string()),
-                String::from("OL"),
-                Content::new_simple("output".to_string()),
-                0,
-            )?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()?;
 
             let _n0 = graph
                 .insert_between(
@@ -1447,13 +1629,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_bfs_should_detect_path_between_nodes() -> Result<(), Box<dyn Error>> {
-            let graph = CyclicGraph::new_default(
-                String::from("IL"),
-                Content::<String, String>::new_simple("input".to_string()),
-                String::from("OL"),
-                Content::new_simple("output".to_string()),
-                0,
-            )?;
+            let graph = CyclicGraphBuilder::new()
+                .with_input_id("IL".to_string())
+                .with_input_data(Content::<String, String>::new_simple(
+                    "input_data".to_string(),
+                ))
+                .with_output_id("OL".to_string())
+                .with_output_data(Content::new_simple("output_data".to_string()))
+                .with_start_id_idx(0)
+                .build()?;
 
             // input -> [n0, n1 -> n2] -> output
 
