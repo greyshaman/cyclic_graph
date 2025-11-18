@@ -1,7 +1,7 @@
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
-use cyclic_graph::{Content, Error as CGError, content_types::layer_content::LayerContent};
+use cyclic_graph::{Content, Error as CGError, LayerContent};
 use futures::stream::select_all;
 use tokio::sync::RwLock;
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
@@ -40,6 +40,7 @@ impl OutputPort {
     }
 
     /// Returns `true` if this port is connected, `false` otherwise.
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self.receiver.is_some()
     }
@@ -57,7 +58,7 @@ impl OutputLayer {
             outputs: Arc::new(RwLock::new((0..ports_count).fold(
                 BTreeMap::new(),
                 |mut map, id| {
-                    let new_id = format!("{}_OL{}", net_id.to_string(), id);
+                    let new_id = format!("{}_OL{}", net_id, id);
                     map.insert(new_id.clone(), OutputPort::new(&new_id));
                     map
                 },
@@ -66,7 +67,7 @@ impl OutputLayer {
     }
 
     /// Returns output_stream
-    pub async fn into_stream(&self) -> impl tokio_stream::Stream<Item = OutputData> + '_ {
+    pub async fn to_stream(&self) -> impl tokio_stream::Stream<Item = OutputData> + '_ {
         let r_outputs = self.outputs.read().await;
 
         let streams = r_outputs.values().filter_map(|port| {
