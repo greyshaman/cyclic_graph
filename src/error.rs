@@ -43,6 +43,10 @@ pub enum CyclicGraphError<I> {
     #[error("TryLockError occurred")]
     TryLockError(#[from] tokio::sync::TryLockError),
 
+    /// The error was caused when required fields not set
+    #[error("To build CyclicGraph instance required fields: {0}")]
+    BuildCyclicGraphRequiredFieldsError(String),
+
     /// The error was caused when called unimplemented function
     #[error("NotImplementedError")]
     NotImplemented(String),
