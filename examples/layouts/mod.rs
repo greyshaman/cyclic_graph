@@ -7,6 +7,7 @@ pub(crate) mod input;
 pub(crate) mod output;
 
 /// The signal sender interface.
+#[allow(dead_code)]
 trait SignalSender {
     fn downlink_request(&mut self) -> broadcast::Receiver<u8> {
         self.sender().subscribe()
