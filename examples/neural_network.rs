@@ -19,7 +19,7 @@ mod layouts;
 mod network {
     use std::{error::Error, sync::Arc};
 
-    use cyclic_graph::{Content, CyclicGraph};
+    use cyclic_graph::{Content, CyclicGraph, CyclicGraphBuilder};
 
     use crate::layouts::{input::InputLayer, output::OutputLayer};
 
@@ -40,15 +40,15 @@ mod network {
             let net = Self {
                 id: net_id,
                 content: Arc::new(
-                    CyclicGraph::new_default(
-                        String::from("IL"),
-                        Content::new_layer(input_layer),
-                        String::from("OL"),
-                        Content::new_layer(output_layer),
-                        0_usize,
-                    )
-                    .expect("Cannot create cyclic graph instance"),
+                    CyclicGraphBuilder::new()
+                        .with_input_id(String::from("IL"))
+                        .with_input_data(Content::new_layer(input_layer))
+                        .with_output_id(String::from("OL"))
+                        .with_output_data(Content::new_layer(output_layer))
+                        .with_start_id_idx(0_usize)
+                        .build()?,
                 ),
+                // .expect("Cannot create cyclic graph instance"),
             };
             let net = Arc::new(net);
             Ok(net)
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let hidden_node_0 = net
         .content()
         .insert_between(
-            Content::new_layer(HiddenLayer::new(0, &net.id(), 3, &vec![1, 2, 3])),
+            Content::new_layer(HiddenLayer::new(0, &net.id(), 3, &[1, 2, 3])),
             "IL".to_string(),
             "OL".to_string(),
         )
@@ -83,12 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _hidden_node_1 = net
         .content()
         .insert_between(
-            Content::new_layer(HiddenLayer::new(
-                1,
-                &net.id(),
-                8,
-                &vec![1, 2, 3, 4, 4, 3, 2, 1],
-            )),
+            Content::new_layer(HiddenLayer::new(1, &net.id(), 8, &[1, 2, 3, 4, 4, 3, 2, 1])),
             hidden_node_0.id().to_string(),
             "OL".to_string(),
         )
@@ -110,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .as_any()
                 .downcast_ref::<OutputLayer>()
                 .expect("Cannot downcast to output layer");
-            let mut stream = output_layer.into_stream().await;
+            let mut stream = output_layer.to_stream().await;
             while let Some(output) = stream.next().await {
                 println!("Channel {} has received signal: {}", output.0, output.1);
             }
@@ -143,7 +138,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             let port_ids: Vec<String> = {
                 let ports = input_layer.port_ids().await;
-                ports.iter().map(|id| id.clone()).collect()
+                ports.to_vec()
             };
 
             if port_ids.is_empty() {
