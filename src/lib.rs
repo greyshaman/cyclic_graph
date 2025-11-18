@@ -1,11 +1,13 @@
-pub mod content_types;
-pub mod cyclic_graph;
-pub mod error;
-pub mod id_generator;
-pub mod node;
+mod content_types;
+mod cyclic_graph;
+mod error;
+mod graph;
+mod id_generator;
+mod node;
 
 pub use content_types::content::Content;
-pub use cyclic_graph::CyclicGraph;
+pub use content_types::layer_content::LayerContent;
+pub use cyclic_graph::{CyclicGraph, CyclicGraphBuilder};
 pub use error::CyclicGraphError as Error;
 pub use id_generator::{GeneratorMode, IdGenerator};
 pub use node::Node;
