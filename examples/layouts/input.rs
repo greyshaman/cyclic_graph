@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cyclic_graph::{Content, Error as CGError, content_types::layer_content::LayerContent};
+use cyclic_graph::{Content, Error as CGError, LayerContent};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::layouts::{CHANNEL_CAPACITY, SignalSender};
@@ -31,6 +31,7 @@ impl InputPort {
     }
 
     /// Returns the input port id.
+    #[allow(dead_code)]
     pub fn id(&self) -> Arc<String> {
         self.id.clone()
     }
@@ -42,6 +43,7 @@ impl InputPort {
     }
 
     /// Returns true if there are any connected neurons.
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self.sender.receiver_count() > 0
     }
@@ -67,7 +69,7 @@ impl InputLayer {
             inputs: Arc::new(RwLock::new((0..ports_count).fold(
                 BTreeMap::new(),
                 |mut map, id| {
-                    let new_id = format!("{}_IL{}", net_id.to_string(), id);
+                    let new_id = format!("{}_IL{}", net_id, id);
                     map.insert(new_id.clone(), InputPort::new(Arc::new(new_id)));
                     map
                 },
