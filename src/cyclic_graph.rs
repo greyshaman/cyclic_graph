@@ -861,6 +861,149 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_build_new_graph_without_input_data() {
+            use crate::Error as CGError;
+
+            let output_content = Content::<usize, String>::new_simple("output_data".to_string());
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(0)
+                .build();
+
+            assert!(result.is_err());
+
+            if let Err(boxed_error) = result {
+                let error = boxed_error
+                    .downcast_ref::<CGError<usize>>()
+                    .unwrap();
+
+                match error {
+                    CGError::BuildCyclicGraphRequiredFieldsError(msg) => {
+                        assert!(msg.contains("input") && !msg.contains("input_id"))
+                    }
+                    _ => panic!("Other unexpected error"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_build_new_graph_without_input_id() {
+            use crate::Error as CGError;
+
+            let input_content = Content::<usize, String>::new_simple("input_data".to_string());
+            let output_content = Content::<usize, String>::new_simple("output_data".to_string());
+            let result = CyclicGraphBuilder::new()
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .with_start_id_idx(0)
+                .build();
+
+            assert!(result.is_err());
+
+            if let Err(boxed_error) = result {
+                let error = boxed_error
+                    .downcast_ref::<CGError<usize>>()
+                    .unwrap();
+
+                match error {
+                    CGError::BuildCyclicGraphRequiredFieldsError(msg) => {
+                        assert!(msg.contains("input_id"))
+                    }
+                    _ => panic!("Other unexpected error"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_build_new_graph_without_output_data() {
+            use crate::Error as CGError;
+
+            let input_content = Content::<usize, String>::new_simple("input_data".to_string());
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_start_id_idx(0)
+                .build();
+
+            assert!(result.is_err());
+
+            if let Err(boxed_error) = result {
+                let error = boxed_error
+                    .downcast_ref::<CGError<usize>>()
+                    .unwrap();
+
+                match error {
+                    CGError::BuildCyclicGraphRequiredFieldsError(msg) => {
+                        assert!(msg.contains("output") && !msg.contains("output_id"))
+                    }
+                    _ => panic!("Other unexpected error"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_build_new_graph_without_output_id() {
+            use crate::Error as CGError;
+
+            let input_content = Content::<usize, String>::new_simple("input_data".to_string());
+            let output_content = Content::<usize, String>::new_simple("output_data".to_string());
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_data(output_content)
+                .with_start_id_idx(0)
+                .build();
+
+            assert!(result.is_err());
+
+            if let Err(boxed_error) = result {
+                let error = boxed_error
+                    .downcast_ref::<CGError<usize>>()
+                    .unwrap();
+
+                match error {
+                    CGError::BuildCyclicGraphRequiredFieldsError(msg) => {
+                        assert!(msg.contains("output_id"))
+                    }
+                    _ => panic!("Other unexpected error"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_build_new_graph_without_start_id_idx() {
+            use crate::Error as CGError;
+
+            let input_content = Content::<usize, String>::new_simple("input_data".to_string());
+            let output_content = Content::<usize, String>::new_simple("output_data".to_string());
+            let result = CyclicGraphBuilder::new()
+                .with_input_id(0)
+                .with_input_data(input_content)
+                .with_output_id(1)
+                .with_output_data(output_content)
+                .build();
+
+            assert!(result.is_err());
+
+            if let Err(boxed_error) = result {
+                let error = boxed_error
+                    .downcast_ref::<CGError<usize>>()
+                    .unwrap();
+
+                match error {
+                    CGError::BuildCyclicGraphRequiredFieldsError(msg) => {
+                        assert!(msg.contains("start_id_idx"))
+                    }
+                    _ => panic!("Other unexpected error"),
+                }
+            }
+        }
+
+        #[tokio::test]
         async fn test_append_node_can_add_new_node_to_empty_graph() -> Result<(), Box<dyn Error>> {
             let input_content = Content::<usize, String>::new_simple("input_data".to_string());
             let output_content = Content::new_simple("output_data".to_string());
