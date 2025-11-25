@@ -11,6 +11,9 @@ use crate::weak_node_wrapper::WeakNodeWrapper;
 
 use super::Node;
 
+type ChildrenCollection<D, I> = Arc<RwLock<HashSet<Arc<SimpleNode<D, I>>>>>;
+type ParentsCollection<D, I> = Arc<RwLock<HashSet<WeakNodeWrapper<SimpleNode<D, I>>>>>;
+
 #[derive(Debug)]
 pub struct SimpleNode<D, I = TimeBasedId>
 where
@@ -19,8 +22,8 @@ where
 {
     id: I,
     data: Arc<RwLock<D>>,
-    parents: Arc<RwLock<HashSet<WeakNodeWrapper<SimpleNode<D, I>>>>>,
-    children: Arc<RwLock<HashSet<Arc<SimpleNode<D, I>>>>>,
+    parents: ParentsCollection<D, I>,
+    children: ChildrenCollection<D, I>,
 }
 
 impl<D, I> PartialEq for SimpleNode<D, I>
@@ -108,17 +111,19 @@ where
         old_value
     }
 
-    fn children(&self) -> Arc<RwLock<HashSet<Arc<SimpleNode<D, I>>>>> {
+    fn children(&self) -> ChildrenCollection<D, I> {
         self.children.clone()
     }
 
-    fn parents(&self) -> Arc<RwLock<HashSet<WeakNodeWrapper<SimpleNode<D, I>>>>> {
+    fn parents(&self) -> ParentsCollection<D, I> {
         self.parents.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::parent_id;
+
     use tokio::io::SimplexStream;
 
     use crate::node;
@@ -166,6 +171,14 @@ mod tests {
         assert!(result.unwrap());
     }
 
+    #[test]
+    fn test_try_link_child() {
+        let node1 = Arc::new(SimpleNode::<String>::default());
+        let node2 = Arc::new(SimpleNode::<String>::default());
+
+        assert!(node1.try_link_child(node2).is_ok());
+    }
+
     #[tokio::test]
     async fn test_link_parent() {
         let node1 = SimpleNode::<String, TimeBasedId>::default();
@@ -173,6 +186,14 @@ mod tests {
         let result = node2.link_parent(Arc::new(node1)).await;
         assert!(result.is_ok());
         assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_try_link_parent() {
+        let node1 = Arc::new(SimpleNode::<()>::default());
+        let node2 = Arc::new(SimpleNode::<()>::default());
+
+        assert!(node2.try_link_parent(node1).is_ok());
     }
 
     #[tokio::test]
@@ -202,6 +223,12 @@ mod tests {
         assert!(res.is_err());
     }
 
+    #[test]
+    fn test_try_link_child_method_to_itself_should_return_error() {
+        let node = Arc::new(SimpleNode::<()>::default());
+        assert!(node.try_link_child(node.clone()).is_err());
+    }
+
     #[tokio::test]
     async fn test_link_node_as_parent_to_itself_should_return_error() {
         let node = SimpleNode::<String, TimeBasedId>::default();
@@ -209,6 +236,12 @@ mod tests {
 
         let res = arc_node.link_parent(arc_node.clone()).await;
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_try_link_parent_method_to_itself_should_return_error() {
+        let node = Arc::new(SimpleNode::<()>::default());
+        assert!(node.try_link_parent(node.clone()).is_err());
     }
 
     #[tokio::test]
@@ -227,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_child_ids_method_should_contains_id_of_linked_child() {
+    async fn test_child_ids_method_should_returns_id_of_linked_child() {
         let parent_node = Arc::new(SimpleNode::new(1, "one"));
         let child_node = Arc::new(SimpleNode::new(2, "two"));
 
@@ -238,6 +271,34 @@ mod tests {
 
         assert!(child_ids.contains(&2));
         assert!(!child_ids.contains(&3));
+    }
+
+    #[tokio::test]
+    async fn test_has_parent_with_id_method_for_new_node_should_return_false() {
+        let node = Arc::new(SimpleNode::new(1, ()));
+        assert!(!node.has_parent_with_id(&2).await);
+    }
+
+    #[tokio::test]
+    async fn test_has_parent_width_id_with_existing_parent_node_should_return_true() {
+        let parent_node = Arc::new(SimpleNode::new(1, ()));
+        let child_node = Arc::new(SimpleNode::new(2, ()));
+
+        assert!(child_node.link_parent(parent_node.clone()).await.is_ok());
+        assert!(child_node.has_parent_with_id(&parent_node.id()).await);
+    }
+
+    #[tokio::test]
+    async fn test_parent_ids_method_should_returns_id_of_linked_child() {
+        let parent_node = Arc::new(SimpleNode::new(1, ()));
+        let child_node = Arc::new(SimpleNode::new(2, ()));
+
+        let _not_linked_node = Arc::new(SimpleNode::new(3, ()));
+
+        assert!(child_node.link_parent(parent_node.clone()).await.is_ok());
+        let parent_ids = child_node.parent_ids().await;
+        assert!(parent_ids.contains(&1));
+        assert!(!parent_ids.contains(&3));
     }
 
     /// Test successor_ids method for cyclic graph for each node
@@ -510,5 +571,39 @@ mod tests {
         assert!(predecessor_ids.contains(&node7.id()));
         assert!(predecessor_ids.contains(&node8.id()));
         assert_eq!(predecessor_ids.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_unlink_child_method_should_remove_child_from_parent() {
+        let parent = Arc::new(SimpleNode::new(1, ()));
+        let child1 = Arc::new(SimpleNode::new(2, ()));
+        let child2 = Arc::new(SimpleNode::new(3, ()));
+
+        assert!(parent.link_child(child1.clone()).await.is_ok());
+        assert!(parent.link_child(child2.clone()).await.is_ok());
+
+        assert_eq!(parent.child_ids().await.len(), 2);
+
+        let unlink_result = parent.unlink_child(child1.clone()).await;
+
+        assert!(unlink_result.is_ok());
+        assert!(unlink_result.unwrap());
+        assert_eq!(parent.child_ids().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unlink_parent_method_should_remove_parent_from_child() {
+        let parent1 = Arc::new(SimpleNode::new(1, ()));
+        let parent2 = Arc::new(SimpleNode::new(2, ()));
+        let child = Arc::new(SimpleNode::new(3, ()));
+
+        assert!(child.link_parent(parent1.clone()).await.is_ok());
+        assert!(child.link_parent(parent2.clone()).await.is_ok());
+
+        assert_eq!(child.parent_ids().await.len(), 2);
+
+        let unlink_result = child.clone().unlink_parent(parent1.clone(), None).await;
+        assert!(unlink_result.is_ok());
+        assert_eq!(child.parent_ids().await.len(), 1);
     }
 }
