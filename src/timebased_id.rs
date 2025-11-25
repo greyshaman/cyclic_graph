@@ -10,10 +10,9 @@ impl Default for TimeBasedId {
         let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time early unix epoch");
-        let now_nanoseconds = duration.as_nanos() as u128;
+        let now_nanoseconds = duration.as_nanos();
 
-        let uptime = get_os_uptime()
-            .expect("Uptime request failed") as u128;
+        let uptime = get_os_uptime().expect("Uptime request failed") as u128;
         let uptime = uptime << 64;
 
         Self(uptime + now_nanoseconds)
@@ -25,7 +24,6 @@ impl TimeBasedId {
         self.0
     }
 }
-
 
 #[cfg(test)]
 mod tests {
