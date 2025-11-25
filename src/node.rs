@@ -45,7 +45,7 @@ pub trait Node: 'static + Send + Sync + Eq + PartialEq + Hash {
     async fn has_children(&self) -> bool {
         let children_binding = self.children();
         let r_children = children_binding.read().await;
-        r_children.len() > 0
+        !r_children.is_empty()
     }
 
     /// Returns the child ids of the node.
@@ -85,6 +85,16 @@ pub trait Node: 'static + Send + Sync + Eq + PartialEq + Hash {
         let children_binding = self.children();
         let r_children = children_binding.read().await;
         r_children.iter().map(|child| child.id()).collect()
+    }
+
+    /// Returns the parent ids of the node.
+    async fn parent_ids(&self) -> Vec<Self::Index> {
+        let parent_binding = self.parents();
+        let r_parents = parent_binding.read().await;
+        r_parents
+            .iter()
+            .filter_map(|wp| wp.0.upgrade().map(|p| p.id()))
+            .collect()
     }
 
     /// Returns the successor ids of the node.
@@ -238,24 +248,30 @@ pub trait Node: 'static + Send + Sync + Eq + PartialEq + Hash {
 
     /// Removes link between parent nad current node
     async fn unlink_parent(
-        &'static self,
+        self: Arc<Self>,
         parent: Arc<Self::NeighborNode>,
+        mem_clear_signal: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<bool, Error<Self::Index>> {
         let parents_binding = self.parents();
         let mut w_parents = parents_binding.write().await;
         let weak_parent_ref = WeakNodeWrapper(Arc::downgrade(&parent));
         let res = w_parents.remove(&weak_parent_ref);
 
-        let boxed_self = Box::pin(self);
-        spawn(async move { boxed_self.clean_up_parents() });
+        // let boxed_self = Box::pin(self);
+        let self_cloned = self.clone();
+        spawn(async move { self_cloned.clean_up_parents(mem_clear_signal) });
 
         Ok(res)
     }
 
-    async fn clean_up_parents(&self) {
+    async fn clean_up_parents(
+        self: Arc<Self>,
+        mem_clear_signal: Option<tokio::sync::oneshot::Sender<()>>,
+    ) {
         let parent_binding = self.parents();
         let mut w_parents = parent_binding.write().await;
         w_parents.retain(|weak_ref| weak_ref.0.strong_count() > 0);
+        mem_clear_signal.map(|sender| sender.send(()));
     }
 
     /// Checks if current node has parent node specified by id
@@ -272,6 +288,6 @@ pub trait Node: 'static + Send + Sync + Eq + PartialEq + Hash {
     async fn has_parents(&self) -> bool {
         let parents_binding = self.parents();
         let r_parents = parents_binding.read().await;
-        r_parents.len() > 0
+        !r_parents.is_empty()
     }
 }
