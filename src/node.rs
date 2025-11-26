@@ -257,9 +257,10 @@ pub trait Node: 'static + Send + Sync + Eq + PartialEq + Hash {
         let weak_parent_ref = WeakNodeWrapper(Arc::downgrade(&parent));
         let res = w_parents.remove(&weak_parent_ref);
 
-        // let boxed_self = Box::pin(self);
         let self_cloned = self.clone();
-        spawn(async move { self_cloned.clean_up_parents(mem_clear_signal) });
+        spawn(async move {
+            self_cloned.clean_up_parents(mem_clear_signal).await;
+        });
 
         Ok(res)
     }
