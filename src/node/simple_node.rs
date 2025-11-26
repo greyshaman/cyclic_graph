@@ -312,16 +312,6 @@ mod tests {
         let node8 = Arc::new(SimpleNode::<()>::default());
         let node9 = Arc::new(SimpleNode::<()>::default());
 
-        // let node1 = Arc::new(SimpleNode::new(1, ()));
-        // let node2 = Arc::new(SimpleNode::new(2, ()));
-        // let node3 = Arc::new(SimpleNode::new(3, ()));
-        // let node4 = Arc::new(SimpleNode::new(4, ()));
-        // let node5 = Arc::new(SimpleNode::new(5, ()));
-        // let node6 = Arc::new(SimpleNode::new(6, ()));
-        // let node7 = Arc::new(SimpleNode::new(7, ()));
-        // let node8 = Arc::new(SimpleNode::new(8, ()));
-        // let node9 = Arc::new(SimpleNode::new(9, ()));
-
         // 1 -> 2
         // 1 -> 6
         // 1 -> 8
@@ -438,16 +428,6 @@ mod tests {
     /// 1 -> [2 -> [3 -> 4 -> [2, 5 -> [3, 9]]], 6 -> 7 -> [5, 9], 8 -> 9]
     #[tokio::test]
     async fn test_predecessor_ids_method_should_contains_id_of_predecessors() {
-        // let node1 = Arc::new(SimpleNode::<()>::default());
-        // let node2 = Arc::new(SimpleNode::<()>::default());
-        // let node3 = Arc::new(SimpleNode::<()>::default());
-        // let node4 = Arc::new(SimpleNode::<()>::default());
-        // let node5 = Arc::new(SimpleNode::<()>::default());
-        // let node6 = Arc::new(SimpleNode::<()>::default());
-        // let node7 = Arc::new(SimpleNode::<()>::default());
-        // let node8 = Arc::new(SimpleNode::<()>::default());
-        // let node9 = Arc::new(SimpleNode::<()>::default());
-
         let node1 = Arc::new(SimpleNode::new(1, ()));
         let node2 = Arc::new(SimpleNode::new(2, ()));
         let node3 = Arc::new(SimpleNode::new(3, ()));
@@ -588,6 +568,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_double_call_of_unlink_child_method_should_return_ok_false() {
+        let parent = Arc::new(SimpleNode::new(1, ()));
+        let child = Arc::new(SimpleNode::new(2, ()));
+
+        assert!(parent.link_child(child.clone()).await.is_ok());
+
+        let unlink_result = parent.unlink_child(child.clone()).await;
+        assert!(unlink_result.is_ok());
+        assert!(unlink_result.unwrap());
+
+        let unlink_result = parent.unlink_child(child.clone()).await;
+        assert!(unlink_result.is_ok());
+        assert!(!unlink_result.unwrap());
+    }
+
+    #[tokio::test]
     async fn test_unlink_parent_method_should_remove_parent_from_child_and_clear_memory() {
         let parent1 = Arc::new(SimpleNode::new(1, ()));
         let parent2 = Arc::new(SimpleNode::new(2, ()));
@@ -631,5 +627,21 @@ mod tests {
         let _ = rx.await;
         // parents collection now has only one alive parent
         assert_eq!(child.parents().read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_double_call_of_unlink_parent_method_should_return_ok_false() {
+        let parent = Arc::new(SimpleNode::new(1, ()));
+        let child = Arc::new(SimpleNode::new(2, ()));
+
+        assert!(child.link_parent(parent.clone()).await.is_ok());
+
+        let unlink_result = child.clone().unlink_parent(parent.clone(), None).await;
+        assert!(unlink_result.is_ok());
+        assert!(unlink_result.unwrap());
+
+        let unlink_result = child.clone().unlink_parent(parent.clone(), None).await;
+        assert!(unlink_result.is_ok());
+        assert!(!unlink_result.unwrap());
     }
 }
