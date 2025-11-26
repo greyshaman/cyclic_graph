@@ -122,11 +122,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process::parent_id;
-
-    use tokio::io::SimplexStream;
-
-    use crate::node;
+    use tokio::sync::oneshot;
 
     use super::*;
 
@@ -592,18 +588,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unlink_parent_method_should_remove_parent_from_child() {
+    async fn test_unlink_parent_method_should_remove_parent_from_child_and_clear_memory() {
         let parent1 = Arc::new(SimpleNode::new(1, ()));
         let parent2 = Arc::new(SimpleNode::new(2, ()));
-        let child = Arc::new(SimpleNode::new(3, ()));
+        let child = Arc::new(SimpleNode::new(4, ()));
 
+        // link parent1 as parent of child
         assert!(child.link_parent(parent1.clone()).await.is_ok());
+
+        // link parent2 as parent of child
         assert!(child.link_parent(parent2.clone()).await.is_ok());
 
+        // create signal channel to clear memory after unlink parent
+        let (tx, rx) = oneshot::channel::<()>();
+
+        {
+            let parent3 = Arc::new(SimpleNode::new(3, ()));
+
+            // link third parent to child node
+            assert!(child.link_parent(parent3.clone()).await.is_ok());
+            // check that child has 3 parents
+            assert_eq!(child.parent_ids().await.len(), 3);
+        }
+        // from this point parent3 is dropped and should be removed from child's parents
+
+        // parents collection should contains three weak elements with one dropped parent
+        assert_eq!(child.parents().read().await.len(), 3);
+        // parent_ids method returns only alive parent ids
         assert_eq!(child.parent_ids().await.len(), 2);
 
-        let unlink_result = child.clone().unlink_parent(parent1.clone(), None).await;
+        // unlink one of alive linked parent
+        let unlink_result = child.clone().unlink_parent(parent1.clone(), Some(tx)).await;
         assert!(unlink_result.is_ok());
+
+        // parents collection has one alive weak parent link and one dead parent link
+        // but unlink_parent spawned memory clean task in background
+        assert_eq!(child.parents().read().await.len(), 2);
+        // parent_ids method returns only alive parent ids
         assert_eq!(child.parent_ids().await.len(), 1);
+
+        // await while memory clean task complete
+        let _ = rx.await;
+        // parents collection now has only one alive parent
+        assert_eq!(child.parents().read().await.len(), 1);
     }
 }
